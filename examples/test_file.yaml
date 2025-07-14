@@ -1,0 +1,24 @@
+certificates:
+  - certificate:
+      id: intercdfromfile
+      signer:
+        cert_pem_file: "./examples/maincadoc_cert.pem"
+        private_key_pem_file: "./examples/maincadoc_pkey.pem"
+      ca: true
+      pkix:
+        commonname: www.bar-with-file.se
+        country: SE
+        organization: test
+      keytype: P224
+      hashalg: SHA256
+  - certificate:
+      id: client3fromfilesign
+      parent: intercdfromfile
+      pkix:
+        commonname: www.baz.se
+        country: SE
+        organization: test
+      keytype: P224
+      hashalg: SHA256
+      usage:
+        - contentcommitment
