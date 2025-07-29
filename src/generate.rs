@@ -4,6 +4,7 @@ use cert_helper::certificate::{
     CertBuilder, Certificate as CHCertificate, HashAlg as CHHashAlg, KeyType as CHKeyType,
     Usage as CHUsage, UseesBuilderFields, X509Common,
 };
+use std::path::Path;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -61,19 +62,29 @@ impl CertificateSaver for RealCertificateSaver {
     }
 }
 
-pub fn create(flat_certs: Vec<Certificate>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn create<C: AsRef<Path>>(
+    flat_certs: Vec<Certificate>,
+    output_dir: C,
+) -> Result<(), Box<dyn std::error::Error>> {
     let signer_loader = RealSignerLoader;
     let cert_creator = RealCertificateCreator;
     let cert_saver = RealCertificateSaver;
-    create_inner(flat_certs, &signer_loader, &cert_creator, &cert_saver)?;
+    create_inner(
+        flat_certs,
+        &signer_loader,
+        &cert_creator,
+        &cert_saver,
+        output_dir,
+    )?;
     Ok(())
 }
 
-fn create_inner(
+fn create_inner<C: AsRef<Path>>(
     flat_certs: Vec<Certificate>,
     signer_loader: &dyn SignerLoader,
     cert_creator: &dyn CertificateCreator,
     cert_saver: &dyn CertificateSaver,
+    output_dir: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cert_map: HashMap<String, &Certificate> = HashMap::new();
     let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
@@ -135,7 +146,7 @@ fn create_inner(
     }
     println!("\nAll certificates created:");
     for (id, v) in &created {
-        cert_saver.save(v, "./certs", id)?;
+        cert_saver.save(v, output_dir.as_ref().to_str().unwrap(), id)?;
     }
     Ok(())
 }
@@ -338,7 +349,7 @@ mod tests {
             .times(3)
             .returning(|_, _, _| Ok(()));
 
-        let result = create_inner(certs, &mock_loader, &mock_creator, &mock_saver);
+        let result = create_inner(certs, &mock_loader, &mock_creator, &mock_saver, "");
 
         assert!(result.is_ok());
     }

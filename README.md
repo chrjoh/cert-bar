@@ -3,8 +3,7 @@
 A rust version of CertificateBar the goal is to create a simple tool to generate certificate and chains to perform test in
 development/stage environments. The setup should allow you to be able to change key types,
 key usages, alternative names, use alreadey created certificates and private keys for signing.
-The project is work in progress, the option to take the config file as cmd argument will be added
-right now it is hardcoded in main
+The project is work in progress.
 
 ## Dependencies
 
@@ -28,6 +27,8 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 **Crate:** https://crates.io/crates/cert-helper
 
 ## Usage
+
+The program takes two arguments the yaml config that defines what certificates to create and an output directory for the created certificates and keys.
 
 ## Config
 
