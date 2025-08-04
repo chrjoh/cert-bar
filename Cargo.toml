@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cert-helper = "0.3.1"
+cert-helper = "0.3.8"
 clap = { version = "4.5.41", features = ["derive"] }
 config = { version = "0.15.11", features = ["yaml"] }
 mockall = "0.13.1"

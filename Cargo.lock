@@ -136,6 +136,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
 name = "bitflags"
 version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,13 +189,17 @@ dependencies = [
 
 [[package]]
 name = "cert-helper"
-version = "0.3.1"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f44c2a5c5bb4393f32834af00ef2bbed363335191823672aea2c2c07623cdfc"
+checksum = "ed4d23f6b33edfa3222a36c18ff5e4e663e4ad14ac78ab074ee208ccd5b37e7c"
 dependencies = [
+ "bit-vec",
  "chrono",
+ "num-bigint",
  "openssl",
+ "openssl-sys",
  "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -1513,3 +1523,9 @@ dependencies = [
  "encoding_rs",
  "hashlink",
 ]
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
