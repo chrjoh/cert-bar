@@ -7,7 +7,7 @@ The project is work in progress.
 
 ## Dependencies
 
-### Dependency: `cert-helper` v0.3.1
+### Dependency: `cert-helper` v0.3.8
 
 This project uses `cert-helper`, a utility designed to simplify the creation and management of X.509 certificates using OpenSSL. It provides a structured and automated approach to:
 
