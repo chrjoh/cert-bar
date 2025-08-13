@@ -166,15 +166,23 @@ fn create_certificate<'a>(
         .map(|vec| vec.iter().map(|s| s.as_str()).collect())
         .unwrap_or_else(|| Vec::new());
     let key_type = CHKeyType::from_key_type(cert.keytype.clone(), cert.keylength);
-    let builder = CertBuilder::new()
+
+    // Panic if key_type is not Ed25519 and no hash algorithm is set
+    if key_type != CHKeyType::Ed25519 && cert.hashalg.is_none() {
+        panic!("Hash algorithm must be set for non-Ed25519 keys");
+    }
+
+    let mut builder = CertBuilder::new()
         .common_name(&cert.pkix.commonname)
         .country_name(&cert.pkix.country)
         .organization(&cert.pkix.organization)
         .alternative_names(alt_names_as_str_vec)
         .key_usage(usage)
-        .signature_alg(CHHashAlg::from(cert.hashalg.clone()))
         .key_type(CHKeyType::from(key_type))
         .is_ca(cert.ca.unwrap_or(false));
+    if let Some(hash_alg) = &cert.hashalg {
+        builder = builder.signature_alg(CHHashAlg::from(hash_alg.clone()));
+    }
 
     let ch_cert = match signer {
         Some(signer) => builder.build_and_sign(&signer.cert),
@@ -239,11 +247,11 @@ mod tests {
     fn test_create_with_mocked_dependencies() {
         let root_cert = Certificate {
             ca: Some(true),
-            keytype: KeyType::P224,
+            keytype: KeyType::Ed25519,
             id: "root".to_string(),
             pkix: Pkix::default(),
             altnames: None,
-            hashalg: crate::config::HashAlg::SHA256,
+            hashalg: None,
             keylength: None,
             validto: None,
             usage: None,
@@ -260,7 +268,7 @@ mod tests {
             parent: Some("root".to_string()),
             pkix: Pkix::default(),
             altnames: None,
-            hashalg: crate::config::HashAlg::SHA256,
+            hashalg: Some(crate::config::HashAlg::SHA256),
             keylength: None,
             validto: None,
             usage: None,
@@ -274,7 +282,7 @@ mod tests {
             keytype: KeyType::P224,
             pkix: Pkix::default(),
             altnames: None,
-            hashalg: crate::config::HashAlg::SHA256,
+            hashalg: Some(crate::config::HashAlg::SHA256),
             keylength: None,
             validto: None,
             usage: None,

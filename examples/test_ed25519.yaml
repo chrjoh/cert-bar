@@ -1,0 +1,37 @@
+certificates:
+  - certificate:
+      id: ed_maincadoc
+      parent: ed_maincadoc
+      ca: true
+      pkix:
+        commonname: www.foo.se
+        country: SE
+        organization: test
+        organizationunit: testcaecdsa
+      keytype: Ed25519
+      validto: 2034-01-01
+  - certificate:
+      id: ed_intercadoc
+      parent: ed_maincadoc
+      ca: true
+      pkix:
+        commonname: www.bar.se
+        country: SE
+        organization: test
+        organizationunit: testinterca
+      keytype: P224
+      keylength: 1024
+      hashalg: SHA256
+  - certificate:
+      id: ed_client1sign
+      parent: ed_intercadoc
+      pkix:
+        commonname: www.baz.se
+        country: SE
+        organization: test
+        organizationunit: testweb
+      keytype: P224
+      keylength: 1024
+      hashalg: SHA256
+      usage:
+        - contentcommitment

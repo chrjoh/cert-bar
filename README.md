@@ -7,7 +7,7 @@ The project is work in progress.
 
 ## Dependencies
 
-### Dependency: `cert-helper` v0.3.8
+### Dependency: `cert-helper` v0.3.10
 
 This project uses `cert-helper`, a utility designed to simplify the creation and management of X.509 certificates using OpenSSL. It provides a structured and automated approach to:
 
@@ -22,7 +22,7 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 - Simplifies configuration for PKI setups
 - Suitable for development and testing
 
-**Version:** `0.3.1`
+**Version:** `0.3.10`
 **License:** MIT
 **Crate:** https://crates.io/crates/cert-helper
 
@@ -89,24 +89,26 @@ certificates:
 
 ```
 
+Create CA certificate with Ed25519 for signing see `examples/test_ed25519.yaml`
+
 The options for each keywords is(\* denote required values)
 
-| keyword         | description                                                                                                          | options                              |
-| --------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| id \*           | id used to identify the certificate and also the name used then saving the certificate and the private key to a file | string: mainca                       |
-| parent          | certificate to be used then signing, must be a valid id if not signer is used id                                     | string: mainca                       |
-| keytype \*      | key type to be used                                                                                                  | string: RSA, P224, P256, P384, P512  |
-| hashalg \*      | which algorithm to be used for signature, default is SHA256                                                          | string: SHA1, SHA256, SHA384, SHA512 |
-| commonname \*   | the common name this certificate shoud have                                                                          | string: www.foo.se                   |
-| country \*      | the country code to use                                                                                              | string: SE                           |
-| organization \* | organisation name                                                                                                    | string: test                         |
-| ca              | is this certificate used to sign other certificates, default value is false                                          | boolean: true or false               |
-| altnames        | list of alternative DNS names this certificate is valid for                                                          | string: valid dns names              |
-| keylength       | key length, only used with RSA key(2048 or 4096), default is 2048                                                    | int: 2048                            |
-| validfrom       | Start date then the certificate is valid, default is now                                                             | string: 2010-01-01                   |
-| validto         | End date then the certificate is not valid, default is 1 year                                                        | string: 2020-01-01                   |
-| signer          | if points to signer cert and private key file key                                                                    | see above for example                |
-| usage           | Key usage to ad to the certificates, see list below for options                                                      | list of strings                      |
+| keyword         | description                                                                                                          | options                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| id \*           | id used to identify the certificate and also the name used then saving the certificate and the private key to a file | string: mainca                               |
+| parent          | certificate to be used then signing, must be a valid id if not signer is used id                                     | string: mainca                               |
+| keytype \*      | key type to be used                                                                                                  | string: RSA, P224, P256, P384, P512, Ed25519 |
+| hashalg \*      | which algorithm to be used for signature, default is SHA256                                                          | string: SHA1, SHA256, SHA384, SHA512         |
+| commonname \*   | the common name this certificate shoud have                                                                          | string: www.foo.se                           |
+| country \*      | the country code to use                                                                                              | string: SE                                   |
+| organization \* | organisation name                                                                                                    | string: test                                 |
+| ca              | is this certificate used to sign other certificates, default value is false                                          | boolean: true or false                       |
+| altnames        | list of alternative DNS names this certificate is valid for                                                          | string: valid dns names                      |
+| keylength       | key length, only used with RSA key(2048 or 4096), default is 2048                                                    | int: 2048                                    |
+| validfrom       | Start date then the certificate is valid, default is now                                                             | string: 2010-01-01                           |
+| validto         | End date then the certificate is not valid, default is 1 year                                                        | string: 2020-01-01                           |
+| signer          | if points to signer cert and private key file key                                                                    | see above for example                        |
+| usage           | Key usage to ad to the certificates, see list below for options                                                      | list of strings                              |
 
 ### Key usage
 

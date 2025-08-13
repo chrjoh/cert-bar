@@ -13,7 +13,7 @@ struct Args {
     #[arg(
         short,
         long,
-        default_value_t = String::from("./examples/test_file.yaml"))]
+        default_value_t = String::from("./examples/test_ed25519.yaml"))]
     config_file: String,
     /// directory to store the created certificates and keys
     #[arg(short, long,default_value_t = String::from("./certs"))]

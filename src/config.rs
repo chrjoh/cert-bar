@@ -28,6 +28,7 @@ pub enum KeyType {
     P256,
     P384,
     P521,
+    Ed25519,
 }
 
 pub trait FromKeyType {
@@ -45,6 +46,7 @@ impl FromKeyType for CHKeyType {
             KeyType::P256 => CHKeyType::P256,
             KeyType::P384 => CHKeyType::P384,
             KeyType::P521 => CHKeyType::P521,
+            KeyType::Ed25519 => CHKeyType::Ed25519,
         }
     }
 }
@@ -93,7 +95,7 @@ pub struct Certificate {
     pub pkix: Pkix,
     pub keytype: KeyType,
     pub altnames: Option<Vec<String>>,
-    pub hashalg: HashAlg,
+    pub hashalg: Option<HashAlg>,
     pub keylength: Option<u32>,
     pub validto: Option<String>,
     pub usage: Option<Vec<Usage>>,
@@ -174,7 +176,7 @@ certificates:
         assert_eq!(cert.ca, Some(true));
         assert_eq!(cert.pkix.commonname, "Example CN");
         assert_eq!(cert.keytype, KeyType::RSA);
-        assert_eq!(cert.hashalg, HashAlg::SHA256);
+        assert_eq!(cert.hashalg, Some(HashAlg::SHA256));
         assert_eq!(cert.keylength, Some(2048));
         assert_eq!(cert.usage.as_ref().unwrap().len(), 2);
     }
