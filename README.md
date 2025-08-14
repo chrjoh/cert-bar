@@ -28,7 +28,13 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 
 ## Usage
 
-The program takes two arguments the yaml config that defines what certificates to create and an output directory for the created certificates and keys.
+The program takes three arguments type to create, the yaml config that defines what to create and an output directory for the created items.
+
+```bash
+cargo run -- CERT --config_file config_cert.yaml --output_dir ./certs
+cargo run -- CSR --config_file config_csr.yaml --output_dir ./certs
+cargo run -- CRL --config_file config_crl.yaml --output_dir ./certs
+```
 
 ## Config
 
