@@ -1,0 +1,29 @@
+csrs:
+  - csr:
+      id: csr1
+      ca: true
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+  - csr:
+      id: csr2
+      ca: false
+      pkix:
+        commonname: "Example"
+        country: "SE"
+        organization: "Example2"
+      keytype: RSA
+      altnames:
+        - example2.com,
+        - www.example2.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]

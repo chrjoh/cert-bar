@@ -113,13 +113,11 @@ pub struct Csrs {
 pub struct Csr {
     pub id: String,
     pub sign_request: Option<SigningRequest>,
-    pub ca: Option<bool>,
     pub pkix: Option<Pkix>,
     pub keytype: Option<KeyType>,
     pub altnames: Option<Vec<String>>,
     pub hashalg: Option<HashAlg>,
     pub keylength: Option<u32>,
-    pub validto: Option<String>,
     pub usage: Option<Vec<Usage>>,
 }
 
@@ -127,6 +125,8 @@ pub struct Csr {
 pub struct SigningRequest {
     pub csr_pem_file: String,
     pub signer: Signer,
+    pub validto: Option<String>,
+    pub ca: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -223,7 +223,6 @@ csrs:
   - csr:
       id: csr1
       sign_request: null
-      ca: true
       pkix:
         commonname: "Example CN"
         country: "SE"
@@ -234,7 +233,6 @@ csrs:
         - www.example.com
       hashalg: SHA256
       keylength: 2048
-      validto: "2030-01-01"
       usage: [serverauth, clientauth]
 "#;
 
@@ -248,7 +246,6 @@ csrs:
         assert_eq!(csrs.len(), 1);
 
         let csr = &csrs[0];
-        assert_eq!(csr.ca, Some(true));
         assert_eq!(csr.pkix.as_ref().unwrap().commonname, "Example CN");
         assert_eq!(csr.keytype, Some(KeyType::RSA));
         assert_eq!(csr.hashalg, Some(HashAlg::SHA256));
@@ -264,6 +261,8 @@ csrs:
       id: csr1
       sign_request:
         csr_pem_file: "csr.pem"
+        validto: "2030-01-01"
+        ca: true
         signer:
             cert_pem_file: signer_cert.pem
             private_key_pem_file: signer_pkey.pem
@@ -284,6 +283,8 @@ csrs:
             csr.sign_request,
             Some(SigningRequest {
                 csr_pem_file: "csr.pem".to_string(),
+                validto: Some("2030-01-01".to_string()),
+                ca: Some(true),
                 signer: Signer {
                     cert_pem_file: "signer_cert.pem".to_string(),
                     private_key_pem_file: "signer_pkey.pem".to_string()
