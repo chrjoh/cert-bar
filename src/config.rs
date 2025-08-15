@@ -105,16 +105,25 @@ pub struct Certificate {
 pub struct CsrWrapper {
     pub csr: Csr,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SigningRequestWrapper {
+    pub signing_request: SigningRequest,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Csrs {
+    #[serde(default)]
     csrs: Vec<CsrWrapper>,
+
+    #[serde(default)]
+    signing_requests: Vec<SigningRequestWrapper>,
 }
 #[derive(Debug, Deserialize, Clone)]
 pub struct Csr {
     pub id: String,
-    pub sign_request: Option<SigningRequest>,
-    pub pkix: Option<Pkix>,
-    pub keytype: Option<KeyType>,
+    pub pkix: Pkix,
+    pub keytype: KeyType,
     pub altnames: Option<Vec<String>>,
     pub hashalg: Option<HashAlg>,
     pub keylength: Option<u32>,
@@ -145,6 +154,10 @@ pub struct CreatedCertificate {
     pub id: String,
     pub cert: CHCertificate,
 }
+pub struct CsrData {
+    pub csrs: Vec<Csr>,
+    pub to_sign: Vec<SigningRequest>,
+}
 
 pub fn read_certificate_config<C: AsRef<Path>>(
     config: C,
@@ -160,12 +173,20 @@ pub fn read_certificate_config<C: AsRef<Path>>(
     Ok(flat_certs)
 }
 
-pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<Vec<Csr>, Box<dyn std::error::Error>> {
+pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config).expect("No config file found");
 
     let csrs: Csrs = serde_yaml::from_str(&yaml_str)?;
     let flat_csr: Vec<Csr> = csrs.csrs.into_iter().map(|wrapper| wrapper.csr).collect();
-    Ok(flat_csr)
+    let flat_requests_to_sign: Vec<SigningRequest> = csrs
+        .signing_requests
+        .into_iter()
+        .map(|f| f.signing_request)
+        .collect();
+    Ok(CsrData {
+        csrs: flat_csr,
+        to_sign: flat_requests_to_sign,
+    })
 }
 
 #[cfg(test)]
@@ -222,7 +243,6 @@ certificates:
 csrs:
   - csr:
       id: csr1
-      sign_request: null
       pkix:
         commonname: "Example CN"
         country: "SE"
@@ -242,12 +262,13 @@ csrs:
         let result = read_csr_config(temp_file.path());
         assert!(result.is_ok());
 
-        let csrs = result.unwrap();
+        let data = result.unwrap();
+        let csrs = data.csrs;
         assert_eq!(csrs.len(), 1);
 
         let csr = &csrs[0];
-        assert_eq!(csr.pkix.as_ref().unwrap().commonname, "Example CN");
-        assert_eq!(csr.keytype, Some(KeyType::RSA));
+        assert_eq!(csr.pkix.commonname, "Example CN");
+        assert_eq!(csr.keytype, KeyType::RSA);
         assert_eq!(csr.hashalg, Some(HashAlg::SHA256));
         assert_eq!(csr.keylength, Some(2048));
         assert_eq!(csr.usage.as_ref().unwrap().len(), 2);
@@ -256,10 +277,8 @@ csrs:
     #[test]
     fn test_read_csr_config_for_signing_valid_yaml() {
         let yaml_content = r#"
-csrs:
-  - csr:
-      id: csr1
-      sign_request:
+signing_requests:
+  - signing_request:
         csr_pem_file: "csr.pem"
         validto: "2030-01-01"
         ca: true
@@ -274,14 +293,15 @@ csrs:
         let result = read_csr_config(temp_file.path());
         assert!(result.is_ok());
 
-        let csrs = result.unwrap();
-        assert_eq!(csrs.len(), 1);
+        let data = result.unwrap();
+        let to_sign = data.to_sign;
+        assert_eq!(to_sign.len(), 1);
 
-        let csr = &csrs[0];
+        let first = &to_sign[0];
 
         assert_eq!(
-            csr.sign_request,
-            Some(SigningRequest {
+            first,
+            &SigningRequest {
                 csr_pem_file: "csr.pem".to_string(),
                 validto: Some("2030-01-01".to_string()),
                 ca: Some(true),
@@ -289,7 +309,7 @@ csrs:
                     cert_pem_file: "signer_cert.pem".to_string(),
                     private_key_pem_file: "signer_pkey.pem".to_string()
                 }
-            })
+            }
         );
     }
 }

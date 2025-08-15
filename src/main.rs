@@ -56,8 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config_file,
             output_dir,
         } => {
-            let flat_csrs = read_csr_config(config_file)?;
-            csr::create(flat_csrs, output_dir)?;
+            let data = read_csr_config(config_file)?;
+            csr::create_csr(data.csrs, &output_dir)?;
+            csr::sign_requests(data.to_sign, &output_dir)?;
             println!("Not fully implemented yet");
             Ok(())
         }
