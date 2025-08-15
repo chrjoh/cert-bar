@@ -23,6 +23,7 @@ in the go version CertificateBar.
 - **Certificate Construction**: Automatically construct certificates from CSRs using specified signing credentials.
 - **Combined Workflow**: When both CSR definitions and signing requests are provided, the tool can generate and sign certificates in a single run.
 - **Configurable via YAML**: Define CSRs and signing operations in a single configuration file.
+- **CRL generation**: Create or update CRL with revoked certificates.
 
 ---
 
@@ -180,7 +181,7 @@ csr_pem_file: ./certs/csr1_csr.pem
 
 where `csr1` is the id for the generated certificate signing request
 
-# Certificate revokation list (CRL)
+# Certificate revocation list (CRL)
 
 This YAML configuration file defines the structure for generating a Certificate Revocation List (CRL).
 
