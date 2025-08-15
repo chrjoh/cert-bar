@@ -236,7 +236,7 @@ Each entry contains:
 
 - **Type**: `Object`
 - **Fields**:
-  - **`serial`**: Serial number of the revoked certificate. Can be in colon-separated hex or plain hex format.
+  - **`serial`**: Serial number in hexadecimal format of the revoked certificate. Can be in colon-separated hex or plain hex format.
   - **`reason`**: Reason for revocation. Must be one of:
     - `Unspecified`
     - `KeyCompromise`
