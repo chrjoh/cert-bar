@@ -1,0 +1,17 @@
+crl_file: ./certs/file_crl.pem
+signer:
+  cert_pem_file: ./examples/maincadoc_cert.pem
+  private_key_pem_file: ./examples/maincadoc_pkey.pem
+revoked:
+  - cert_info:
+      serial: 20:4a:77:d3:38:09:ab:2f:65:24:c7:cd:a6:ae:22:e1:ce:1e:7a:d9
+      reason: KeyCompromise
+  - cert_info:
+      serial: 224a77d33809ab2f6524c7cda6ae22e1ce1e7ad9
+      reason: CaCompromise
+  - cert_info:
+      serial: 22
+      reason: CaCompromise
+  - cert_info:
+      serial: 33
+      reason: CaCompromise

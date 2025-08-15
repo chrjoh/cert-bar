@@ -28,7 +28,7 @@ in the go version CertificateBar.
 
 ## Dependencies
 
-### Dependency: `cert-helper` v0.3.10
+### Dependency: `cert-helper` v0.3.13
 
 This project uses `cert-helper`, a utility designed to simplify the creation and management of X.509 certificates using OpenSSL. It provides a structured and automated approach to:
 
@@ -43,7 +43,7 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 - Simplifies configuration for PKI setups
 - Suitable for development and testing
 
-**Version:** `0.3.10`
+**Version:** `0.3.13`
 **License:** MIT
 **Crate:** https://crates.io/crates/cert-helper
 
@@ -54,7 +54,6 @@ The program takes three arguments type to create, the yaml config that defines w
 ```bash
 cargo run -- cert--config-file ./examples/test.yaml --output-dir ./certs
 cargo run -- csr --config-file ./examples/test_csr.yaml --output-dir ./certs
-# crl not added yet
 cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
 ```
 
@@ -121,7 +120,7 @@ certificates:
 
 Create CA certificate with Ed25519 for signing see `examples/test_ed25519.yaml`
 
-## CSR
+## Certificate Signing Requests (CSR)
 
 This configuration file supports two main sections:
 
@@ -180,6 +179,67 @@ csr_pem_file: ./certs/csr1_csr.pem
 ```
 
 where `csr1` is the id for the generated certificate signing request
+
+# Certificate revokation list (CRL)
+
+This YAML configuration file defines the structure for generating a Certificate Revocation List (CRL).
+
+## Structure
+
+```yaml
+crl_file: file_cer.pem
+signer:
+  cert_pem_file: signer_cert.pem
+  private_key_pem_file: signer_pkey.pem
+revoked:
+  - cert_info:
+      serial: 20:4a:77:d3:38:09:ab:2f:65:24:c7:cd:a6:ae:22:e1:ce:1e:7a:d9
+      reason: KeyCompromise
+  - cert_info:
+      serial: 224a77d33809ab2f6524c7cda6ae22e1ce1e7ad9
+      reason: CaCompromise
+```
+
+## Fields
+
+### `crl_file`
+
+- **Type**: `String`
+- **Description**: Specifies the output filename for the generated CRL.
+  If the file already exists, it will be updated.
+  The file must be in PEM format.
+
+### `signer`
+
+- **Type**: `Object`
+- **Description**: Contains the certificate and private key used to sign the CRL.
+
+#### `cert_pem_file`
+
+- **Type**: `String`
+- **Description**: Path to the PEM-encoded certificate used for signing.
+
+#### `private_key_pem_file`
+
+- **Type**: `String`
+- **Description**: Path to the PEM-encoded private key used for signing.
+
+### `revoked`
+
+- **Type**: `List`
+- **Description**: A list of revoked certificates.
+
+Each entry contains:
+
+#### `cert_info`
+
+- **Type**: `Object`
+- **Fields**:
+  - **`serial`**: Serial number of the revoked certificate. Can be in colon-separated hex or plain hex format.
+  - **`reason`**: Reason for revocation. Must be one of:
+    - `Unspecified`
+    - `KeyCompromise`
+    - `CaCompromise`
 
 # Options
 

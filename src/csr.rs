@@ -7,6 +7,23 @@ use cert_helper::certificate::{
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Creates Certificate Signing Requests (CSRs) and saves them to the specified output directory.
+///
+/// This function processes a list of CSR definitions and delegates each to `handle_csr`,
+/// which performs the actual creation and saving of the CSR.
+///
+/// # Arguments
+///
+/// * `flat_csrs` - A vector of `Csr` objects representing the CSRs to be created.
+/// * `output_dir` - The directory where the generated CSRs will be saved.
+///
+/// # Returns
+///
+/// A `Result` indicating success or containing an error if any CSR creation fails.
+///
+/// # Errors
+///
+/// Returns an error if any individual CSR fails to be processed or saved.
 pub fn create_csr<C: AsRef<Path>>(
     flat_csrs: Vec<Csr>,
     output_dir: C,
@@ -16,6 +33,24 @@ pub fn create_csr<C: AsRef<Path>>(
         .try_for_each(|csr| handle_csr(csr, &output_dir))?;
     Ok(())
 }
+
+/// Signs certificate requests and saves the resulting certificates to the specified output directory.
+///
+/// This function processes a list of signing requests and delegates each to `handle_sign`,
+/// which performs the actual signing and saving of the certificate.
+///
+/// # Arguments
+///
+/// * `req` - A vector of `SigningRequest` objects to be signed.
+/// * `output_dir` - The directory where the signed certificates will be saved.
+///
+/// # Returns
+///
+/// A `Result` indicating success or containing an error if any signing operation fails.
+///
+/// # Errors
+///
+/// Returns an error if any individual signing request fails to be processed or saved.
 pub fn sign_requests<C: AsRef<Path>>(
     req: Vec<SigningRequest>,
     output_dir: C,

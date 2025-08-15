@@ -1,9 +1,10 @@
 #![allow(dead_code, unused_variables)]
-use crate::config::{read_certificate_config, read_csr_config};
+use crate::config::{read_certificate_config, read_crl_config, read_csr_config};
 use clap::{Parser, Subcommand};
 
 mod certificate;
 mod config;
+mod crl;
 mod csr;
 
 #[derive(Parser, Debug)]
@@ -73,8 +74,12 @@ fn main() {
         Commands::CRL {
             config_file,
             output_dir,
-        } => {
-            println!("Not implemented yet");
-        }
+        } => match read_crl_config(config_file) {
+            Ok(data) => match crl::handle(data, output_dir) {
+                Ok(_) => println!("Updated or created CRL"),
+                Err(e) => println!("Failed to handle CRL with error {}", e),
+            },
+            Err(e) => println!("Failed to read crl config file with error: {}", e),
+        },
     }
 }

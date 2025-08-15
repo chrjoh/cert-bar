@@ -179,9 +179,12 @@ name = "cert-bar"
 version = "0.1.0"
 dependencies = [
  "cert-helper",
+ "chrono",
  "clap",
  "config",
  "mockall",
+ "num-bigint",
+ "num-traits",
  "serde",
  "serde_yaml",
  "tempfile",
@@ -189,9 +192,9 @@ dependencies = [
 
 [[package]]
 name = "cert-helper"
-version = "0.3.10"
+version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8310ef0856aaf90779eed24d1965e362f0afc9696a6202776f07ff3e133ac4f"
+checksum = "fc48191f29f8e8d5c51d7b1290925d833938ffc6d2b81a34f8c9354cc7ad9d1a"
 dependencies = [
  "bit-vec",
  "chrono",

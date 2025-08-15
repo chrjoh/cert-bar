@@ -1,6 +1,9 @@
 use cert_helper::certificate::{
     Certificate as CHCertificate, HashAlg as CHHashAlg, KeyType as CHKeyType, Usage as CHUsage,
 };
+use cert_helper::crl::CrlReason;
+use num_bigint::BigUint;
+use num_traits::Num;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -159,6 +162,65 @@ pub struct CsrData {
     pub to_sign: Vec<SigningRequest>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub enum Reason {
+    Unspecified,
+    KeyCompromise,
+    CaCompromise,
+}
+
+impl From<Reason> for CrlReason {
+    fn from(reason: Reason) -> Self {
+        match reason {
+            Reason::Unspecified => CrlReason::Unspecified,
+            Reason::KeyCompromise => CrlReason::KeyCompromise,
+            Reason::CaCompromise => CrlReason::CaCompromise,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CRL {
+    pub crl_file: String,
+    pub signer: Signer,
+    #[serde(default)]
+    pub revoked: Vec<RevokedCert>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RevokedCert {
+    pub cert_info: CertInfo,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CertInfo {
+    #[serde(deserialize_with = "deserialize_serial")]
+    pub serial: BigUint,
+    pub reason: Reason,
+}
+
+fn deserialize_serial<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    let normalized = s.replace(":", "");
+    BigUint::from_str_radix(&normalized, 16).map_err(serde::de::Error::custom)
+}
+/// Reads a certificate configuration YAML file and returns a flat list of certificates.
+///
+/// # Arguments
+///
+/// * `config` - A path to the YAML configuration file.
+///
+/// # Returns
+///
+/// A `Result` containing a vector of `Certificate` objects if successful, or an error if the file
+/// cannot be read or parsed.
+///
+/// # Errors
+///
+/// Returns an error if the file does not exist or if the YAML content is invalid.
 pub fn read_certificate_config<C: AsRef<Path>>(
     config: C,
 ) -> Result<Vec<Certificate>, Box<dyn std::error::Error>> {
@@ -173,6 +235,19 @@ pub fn read_certificate_config<C: AsRef<Path>>(
     Ok(flat_certs)
 }
 
+/// Reads a CSR (Certificate Signing Request) configuration YAML file and returns structured CSR data.
+///
+/// # Arguments
+///
+/// * `config` - A path to the YAML configuration file.
+///
+/// # Returns
+///
+/// A `Result` containing a `CsrData` object with parsed CSRs and signing requests, or an error.
+///
+/// # Errors
+///
+/// Returns an error if the file does not exist or if the YAML content is invalid.
 pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config).expect("No config file found");
 
@@ -187,6 +262,27 @@ pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std
         csrs: flat_csr,
         to_sign: flat_requests_to_sign,
     })
+}
+
+/// Reads a CRL (Certificate Revocation List) configuration YAML file and returns the parsed CRL object.
+///
+/// # Arguments
+///
+/// * `config` - A path to the YAML configuration file.
+///
+/// # Returns
+///
+/// A `Result` containing a `CRL` object if successful, or an error if the file cannot be read or parsed.
+///
+/// # Errors
+///
+/// Returns an error if the file does not exist or if the YAML content is invalid.
+pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::error::Error>> {
+    let yaml_str = fs::read_to_string(config).expect("No config file found");
+    match serde_yaml::from_str(&yaml_str) {
+        Ok(data) => Ok(data),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -311,5 +407,37 @@ signing_requests:
                 }
             }
         );
+    }
+
+    #[test]
+    fn test_read_crl_config_valid_yaml() {
+        let yaml_content = r#"
+crl_file: file_cer.pem
+signer:
+    cert_pem_file: signer_cert.pem
+    private_key_pem_file: signer_pkey.pem
+revoked:
+  - cert_info:
+      serial: 20:4a:77:d3:38:09:ab:2f:65:24:c7:cd:a6:ae:22:e1:ce:1e:7a:d9
+      reason: KeyCompromise
+  - cert_info:
+      serial: 224a77d33809ab2f6524c7cda6ae22e1ce1e7ad9
+      reason: CaCompromise
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let result = read_crl_config(temp_file.path());
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.crl_file, "file_cer.pem".to_string());
+        assert_eq!(
+            data.signer,
+            Signer {
+                cert_pem_file: "signer_cert.pem".to_string(),
+                private_key_pem_file: "signer_pkey.pem".to_string()
+            }
+        )
     }
 }
