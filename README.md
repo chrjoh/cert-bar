@@ -38,6 +38,8 @@ cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
 
 ## Config
 
+## Certificates
+
 The structure of the config file is given bellow, certificates label conatins a list of certificate.
 (See config directory for a basic example setup.) The example below is a self signed certificate valid
 for domains `www.foo.se, www.dront.se, www.fro.se` and using a 2048 RSA key.
@@ -96,6 +98,68 @@ certificates:
 ```
 
 Create CA certificate with Ed25519 for signing see `examples/test_ed25519.yaml`
+
+## CSR
+
+This configuration file supports two main sections:
+
+An example configuration file is available at:
+[examples/test_csr.yaml](examples/test_csr.yaml)
+
+- **`csrs`**: Defines one or more Certificate Signing Request (CSR) specifications.
+- **`signing_requests`**: Defines one or more signing operations for existing CSR files.
+
+---
+
+### `csrs` Section
+
+The `csrs` section allows you to define CSR templates that the program can use to generate `.pem` files. Each entry includes:
+
+- `id`: A unique identifier for the CSR.
+- `pkix`: Subject details like:
+  - `commonname`
+  - `country`
+  - `organization`
+- `keytype`: Type of key (e.g., RSA).
+- `keylength`: Key size in bits.
+- `hashalg`: Hash algorithm used for signing.
+- `altnames`: Subject Alternative Names (SANs).
+- `usage`: Extended key usages (e.g., `serverauth`, `clientauth`).
+
+These CSRs can be generated independently by the program and saved to a specified output directory.
+
+---
+
+### `signing_requests` Section
+
+The `signing_requests` section defines how to sign existing CSR files. Each entry includes:
+
+- `csr_pem_file`: Path to the CSR file to be signed.
+- `validto`: Expiration date of the signed certificate.
+- `ca`: Boolean indicating whether the certificate should be a CA.
+- `signer`: Contains paths to the signing certificate and private key:
+  - `cert_pem_file`
+  - `private_key_pem_file`
+
+This section can be used independently to sign pre-existing CSR files.
+
+---
+
+### Combined Usage
+
+When both `csrs` and `signing_requests` are used together, the program can **automatically generate and sign certificates in one go**.
+
+### Automatic Linking
+
+If a `signing_request` references a CSR file like:
+
+```yaml
+csr_pem_file: ./certs/csr1_csr.pem
+```
+
+where `csr1` is the id for the generated certificate signing request
+
+# Options
 
 The options for each keywords is(\* denote required values)
 
