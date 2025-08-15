@@ -39,8 +39,8 @@ pub fn handle<C: AsRef<Path>>(
     )?;
     let mut builder = if let Ok(existing) = fs::read(&crl_data.crl_file) {
         let wrapper = X509CrlWrapper::read_as_pem(&crl_data.crl_file)?;
-        X509CrlBuilder::from_der(&wrapper.to_der()?, signer.clone())
-            .expect("failed to get crl from file")
+        let der = wrapper.to_der()?;
+        X509CrlBuilder::from_der(&der, signer.clone())?
     } else {
         X509CrlBuilder::new(signer.clone())
     };
@@ -53,7 +53,8 @@ pub fn handle<C: AsRef<Path>>(
     }
     let crl_signed = builder.build_and_sign();
     let wrapper = X509CrlWrapper::from_der(&crl_signed)?;
-    let (dir, file) = split_path_and_filename(&crl_data.crl_file).unwrap();
+    let (dir, file) =
+        split_path_and_filename(&crl_data.crl_file).ok_or("failed to split path and filename")?;
     wrapper.save_as_pem(output_dir, file)?;
 
     Ok(())
