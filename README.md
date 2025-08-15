@@ -1,9 +1,30 @@
-# cert-bar
+# Cert-Bar (Rust Version of CertificateBar)
 
-A rust version of CertificateBar the goal is to create a simple tool to generate certificate and chains to perform test in
-development/stage environments. The setup should allow you to be able to change key types,
-key usages, alternative names, use alreadey created certificates and private keys for signing.
-The project is work in progress.
+**Cert-Bar** is a Rust-based tool designed to simplify the generation and signing of certificates and certificate chains for use in development and staging environments. Added more functionality than exist
+in the go version CertificateBar.
+
+---
+
+## Goals
+
+- Provide a flexible and scriptable way to generate certificates and chains.
+- Support customization of:
+  - Key types (e.g., RSA, ECDSA, Ed25519)
+  - Key usages (e.g., server authentication, client authentication)
+  - Subject Alternative Names (SANs)
+- Allow use of pre-existing certificates and private keys for signing.
+- Enable automated workflows for generating and signing certificates.
+
+---
+
+## Features
+
+- **CSR Generation**: Easily generate Certificate Signing Requests (CSRs) with customizable subject fields, key types, and extensions.
+- **Certificate Construction**: Automatically construct certificates from CSRs using specified signing credentials.
+- **Combined Workflow**: When both CSR definitions and signing requests are provided, the tool can generate and sign certificates in a single run.
+- **Configurable via YAML**: Define CSRs and signing operations in a single configuration file.
+
+---
 
 ## Dependencies
 
