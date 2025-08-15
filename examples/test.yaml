@@ -8,7 +8,7 @@ certificates:
         country: SE
         organization: test
         organizationunit: testcaecdsa
-      keytype: P224
+      keytype: P521
       hashalg: SHA256
       validto: 2034-01-01
   - certificate:

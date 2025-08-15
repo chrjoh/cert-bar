@@ -62,6 +62,27 @@ impl CertificateSaver for RealCertificateSaver {
     }
 }
 
+/// Creates certificates using the provided configuration and saves them to the specified output directory.
+///
+/// This function initializes the required components for certificate creation, including:
+/// - A signer loader to retrieve signing credentials.
+/// - A certificate creator to generate certificates.
+/// - A certificate saver to persist the certificates to disk.
+///
+/// It delegates the actual creation logic to `create_inner`.
+///
+/// # Arguments
+///
+/// * `flat_certs` - A vector of `Certificate` objects to be created.
+/// * `output_dir` - The directory where the generated certificates will be saved.
+///
+/// # Returns
+///
+/// A `Result` indicating success or containing an error if the creation or saving process fails.
+///
+/// # Errors
+///
+/// Returns an error if certificate creation or saving fails.
 pub fn create<C: AsRef<Path>>(
     flat_certs: Vec<Certificate>,
     output_dir: C,
@@ -183,7 +204,9 @@ fn create_certificate<'a>(
     if let Some(hash_alg) = &cert.hashalg {
         builder = builder.signature_alg(CHHashAlg::from(hash_alg.clone()));
     }
-
+    if let Some(valid_to) = &cert.validto {
+        builder = builder.valid_to(valid_to);
+    }
     let ch_cert = match signer {
         Some(signer) => builder.build_and_sign(&signer.cert),
         _ => builder.build_and_self_sign(),
