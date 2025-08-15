@@ -81,8 +81,12 @@ fn handle_csr<C: AsRef<Path>>(csr: Csr, output_dir: C) -> Result<(), Box<dyn std
 mod tests {
     use super::*;
     use crate::config::*;
+    use cert_helper::certificate::{CertBuilder, Certificate as CHCertificate};
     use std::collections::HashSet;
     use std::fs;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -134,29 +138,90 @@ mod tests {
         assert!(result.is_err());
     }
 
-    //  #[test]
-    //  fn test_handle_csr_with_sign_request_skips_creation() {
-    //      let temp_dir = tempdir().expect("Failed to create temp dir");
-    //      let csr = Csr {
-    //          id: "test3".to_string(),
-    //          sign_request: Some(SigningRequest {
-    //              csr_pem_file: "dummy.pem".to_string(),
-    //              signer: Signer {
-    //                  cert_pem_file: "cert.pem".to_string(),
-    //                  private_key_pem_file: "key.pem".to_string(),
-    //              },
-    //              validto: None,
-    //              ca: Some(true),
-    //          }),
-    //          pkix: None,
-    //          keytype: None,
-    //          altnames: None,
-    //          hashalg: None,
-    //          keylength: None,
-    //          usage: None,
-    //      };
+    #[test]
+    fn test_handle_sign_with_dummy_cert() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
 
-    //      let result = handle_csr(csr, &temp_dir);
-    //      assert!(result.is_ok());
-    //  }
+        let csr_pem = b"-----BEGIN CERTIFICATE REQUEST-----
+MIIC4zCCAcsCAQAwODETMBEGA1UEAwwKRXhhbXBsZSBDTjELMAkGA1UEBhMCU0Ux
+FDASBgNVBAoMC0V4YW1wbGUgT3JnMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
+CgKCAQEA1IqP3IddAUybVGEhlu6kSVUW30i2NfAEisIcbVdQ9U45IJ/BmzugDlTx
+aQ0Ms0g+Hb2yQhkqP0jXqQMUaEwSSgY2oZ0179YYRkYwmaso4N6flYA3+IarczrZ
+1QrP/l/DYy7nqlvyDBd7nyiWYs8ZIRi6rLP0SXIat//TrW+rxNyh6XIePNL0RmXO
+d4obpS5Gfo0BkWv6Y840SvvCMltfKVxKKu2HE07L0ODlA5OuxZeY8odNv6YzhXNq
+qz6XWke0Lsfg7Cae+UejH+yUnsAtz1DV8ylEUbUSr2peF6OzAVySv1WtNT3qAN2S
+skBADUiJiD0OGarntLy6uYuFt8g3MQIDAQABoGYwZAYJKoZIhvcNAQkOMVcwVTAd
+BgNVHSUEFjAUBggrBgEFBQcDAgYIKwYBBQUHAwEwNAYDVR0RBC0wK4IPd3d3LmV4
+YW1wbGUuY29tggpFeGFtcGxlIENOggxleGFtcGxlLmNvbSwwDQYJKoZIhvcNAQEL
+BQADggEBAEjROaK6aPFm4mhI1ca/RwQRxpC7Dx9hw6lwM7/vE9M8U8jkVwgs9DrA
+HpuO24C2+mjdo7M2D6tfALQ4VXVPUBNxanTdSwJ3oXJ6wiueEIvQv+HojHtn2s+F
+cA3HhjVX2s4z6NjufCLR43wCpmS9uBUmx5qmzepPknUGe9h/Mw37oTAhp9EewXQb
+EP5+MhsSvnji2hwDtsmMfq0Zy/esBbbyBIE+WSbz6fCZNx+E82/qmZDCQY68XjPq
+dKl92Fp7/SPP/HC+ffQLLTk8sPWJ1RNGB6xiq8pjOMR09epNwqrndJvR9TFgdCM8
+QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
+-----END CERTIFICATE REQUEST-----";
+
+        std::fs::write(&csr_path, csr_pem).unwrap();
+
+        let cert = dummy_certificate();
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+
+        let signer = Signer {
+            cert_pem_file: cert_file,
+            private_key_pem_file: key_file,
+        };
+        let csr_pem_file = csr_path.to_str().unwrap().to_string();
+        let request = SigningRequest {
+            csr_pem_file: csr_pem_file.clone(),
+            signer,
+            validto: Some("2026-07-01".to_string()),
+            ca: Some(true),
+        };
+
+        let result = handle_sign(request, temp_dir.path());
+        match result {
+            Ok(_) => assert!(true),
+            Err(e) => println!("Error: {:?}", e),
+        }
+
+        let filename = Path::new(&csr_pem_file)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+
+        let signed_cert_path = temp_dir.path().join(format!("{filename}_cert.pem"));
+        assert!(signed_cert_path.exists());
+    }
+
+    fn dummy_certificate() -> CHCertificate {
+        CertBuilder::new()
+            .common_name("My Test Ca")
+            .is_ca(true)
+            .build_and_self_sign()
+            .unwrap()
+    }
+    fn write_dummy_cert_and_key(cert: &CHCertificate, dir: &Path) -> (String, String) {
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+
+        let cert_pem = cert.x509.to_pem().unwrap();
+        let key_pem = cert
+            .pkey
+            .as_ref()
+            .unwrap()
+            .private_key_to_pem_pkcs8()
+            .unwrap();
+
+        let mut cert_file = File::create(&cert_path).unwrap();
+        cert_file.write_all(&cert_pem).unwrap();
+
+        let mut key_file = File::create(&key_path).unwrap();
+        key_file.write_all(&key_pem).unwrap();
+
+        (
+            cert_path.to_str().unwrap().to_string(),
+            key_path.to_str().unwrap().to_string(),
+        )
+    }
 }

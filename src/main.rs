@@ -40,34 +40,41 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let args = Args::parse();
 
     match args.command {
         Commands::CERT {
             config_file,
             output_dir,
-        } => {
-            let flat_certs = read_certificate_config(config_file)?;
-            certificate::create(flat_certs, output_dir)?;
-            Ok(())
-        }
+        } => match read_certificate_config(config_file) {
+            Ok(flat_certs) => match certificate::create(flat_certs, output_dir) {
+                Ok(_) => println!("Created all certificates"),
+                Err(e) => println!("Failed to generate all certs, with error: {}", e),
+            },
+            Err(e) => println!("Failed to read certificate config file with error: {}", e),
+        },
         Commands::CSR {
             config_file,
             output_dir,
-        } => {
-            let data = read_csr_config(config_file)?;
-            csr::create_csr(data.csrs, &output_dir)?;
-            csr::sign_requests(data.to_sign, &output_dir)?;
-            println!("Not fully implemented yet");
-            Ok(())
-        }
+        } => match read_csr_config(config_file) {
+            Ok(data) => {
+                match csr::create_csr(data.csrs, &output_dir) {
+                    Ok(_) => println!("Created all CSR"),
+                    Err(e) => println!("Failed to create all CSR with error {}", e),
+                }
+                match csr::sign_requests(data.to_sign, &output_dir) {
+                    Ok(_) => println!("Signed all requests"),
+                    Err(e) => println!("Failed to sign requests with error {}", e),
+                }
+            }
+            Err(e) => println!("Failed to read csr config file with error: {}", e),
+        },
         Commands::CRL {
             config_file,
             output_dir,
         } => {
             println!("Not implemented yet");
-            Ok(())
         }
     }
 }
