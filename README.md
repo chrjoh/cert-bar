@@ -54,6 +54,7 @@ The program takes three arguments type to create, the yaml config that defines w
 ```bash
 cargo run -- cert--config-file ./examples/test.yaml --output-dir ./certs
 cargo run -- csr --config-file ./examples/test_csr.yaml --output-dir ./certs
+# crl not added yet
 cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
 ```
 
