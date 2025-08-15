@@ -1,0 +1,35 @@
+csrs:
+  - csr:
+      id: csr1
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+  - csr:
+      id: csr2
+      pkix:
+        commonname: "Example"
+        country: "SE"
+        organization: "Example2"
+      keytype: RSA
+      altnames:
+        - example2.com,
+        - www.example2.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+signing_requests:
+  - signing_request:
+      csr_pem_file: ./certs/csr1_csr.pem
+      validto: "2030-01-01"
+      ca: true
+      signer:
+        cert_pem_file: ./examples/maincadoc_cert.pem
+        private_key_pem_file: ./examples/maincadoc_pkey.pem

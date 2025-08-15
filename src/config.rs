@@ -101,7 +101,44 @@ pub struct Certificate {
     pub usage: Option<Vec<Usage>>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CsrWrapper {
+    pub csr: Csr,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SigningRequestWrapper {
+    pub signing_request: SigningRequest,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Csrs {
+    #[serde(default)]
+    csrs: Vec<CsrWrapper>,
+
+    #[serde(default)]
+    signing_requests: Vec<SigningRequestWrapper>,
+}
 #[derive(Debug, Deserialize, Clone)]
+pub struct Csr {
+    pub id: String,
+    pub pkix: Pkix,
+    pub keytype: KeyType,
+    pub altnames: Option<Vec<String>>,
+    pub hashalg: Option<HashAlg>,
+    pub keylength: Option<u32>,
+    pub usage: Option<Vec<Usage>>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct SigningRequest {
+    pub csr_pem_file: String,
+    pub signer: Signer,
+    pub validto: Option<String>,
+    pub ca: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct Signer {
     pub cert_pem_file: String,
     pub private_key_pem_file: String,
@@ -117,8 +154,12 @@ pub struct CreatedCertificate {
     pub id: String,
     pub cert: CHCertificate,
 }
+pub struct CsrData {
+    pub csrs: Vec<Csr>,
+    pub to_sign: Vec<SigningRequest>,
+}
 
-pub fn read_config<C: AsRef<Path>>(
+pub fn read_certificate_config<C: AsRef<Path>>(
     config: C,
 ) -> Result<Vec<Certificate>, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config).expect("No config file found");
@@ -132,6 +173,22 @@ pub fn read_config<C: AsRef<Path>>(
     Ok(flat_certs)
 }
 
+pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std::error::Error>> {
+    let yaml_str = fs::read_to_string(config).expect("No config file found");
+
+    let csrs: Csrs = serde_yaml::from_str(&yaml_str)?;
+    let flat_csr: Vec<Csr> = csrs.csrs.into_iter().map(|wrapper| wrapper.csr).collect();
+    let flat_requests_to_sign: Vec<SigningRequest> = csrs
+        .signing_requests
+        .into_iter()
+        .map(|f| f.signing_request)
+        .collect();
+    Ok(CsrData {
+        csrs: flat_csr,
+        to_sign: flat_requests_to_sign,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +196,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_read_config_valid_yaml() {
+    fn test_read_certificate_config_valid_yaml() {
         let yaml_content = r#"
 certificates:
   - certificate:
@@ -151,7 +208,6 @@ certificates:
         commonname: "Example CN"
         country: "SE"
         organization: "Example Org"
-        organizationunit: "IT"
       keytype: RSA
       altnames:
         - example.com,
@@ -165,7 +221,7 @@ certificates:
         let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
         write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
 
-        let result = read_config(temp_file.path());
+        let result = read_certificate_config(temp_file.path());
         assert!(result.is_ok());
 
         let certs = result.unwrap();
@@ -179,5 +235,81 @@ certificates:
         assert_eq!(cert.hashalg, Some(HashAlg::SHA256));
         assert_eq!(cert.keylength, Some(2048));
         assert_eq!(cert.usage.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_read_csr_config_valid_yaml() {
+        let yaml_content = r#"
+csrs:
+  - csr:
+      id: csr1
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let result = read_csr_config(temp_file.path());
+        assert!(result.is_ok());
+
+        let data = result.unwrap();
+        let csrs = data.csrs;
+        assert_eq!(csrs.len(), 1);
+
+        let csr = &csrs[0];
+        assert_eq!(csr.pkix.commonname, "Example CN");
+        assert_eq!(csr.keytype, KeyType::RSA);
+        assert_eq!(csr.hashalg, Some(HashAlg::SHA256));
+        assert_eq!(csr.keylength, Some(2048));
+        assert_eq!(csr.usage.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_read_csr_config_for_signing_valid_yaml() {
+        let yaml_content = r#"
+signing_requests:
+  - signing_request:
+        csr_pem_file: "csr.pem"
+        validto: "2030-01-01"
+        ca: true
+        signer:
+            cert_pem_file: signer_cert.pem
+            private_key_pem_file: signer_pkey.pem
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let result = read_csr_config(temp_file.path());
+        assert!(result.is_ok());
+
+        let data = result.unwrap();
+        let to_sign = data.to_sign;
+        assert_eq!(to_sign.len(), 1);
+
+        let first = &to_sign[0];
+
+        assert_eq!(
+            first,
+            &SigningRequest {
+                csr_pem_file: "csr.pem".to_string(),
+                validto: Some("2030-01-01".to_string()),
+                ca: Some(true),
+                signer: Signer {
+                    cert_pem_file: "signer_cert.pem".to_string(),
+                    private_key_pem_file: "signer_pkey.pem".to_string()
+                }
+            }
+        );
     }
 }

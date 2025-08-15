@@ -1,27 +1,80 @@
-#![allow(dead_code)]
-use crate::config::read_config;
-use crate::generate::create;
-use clap::Parser;
+#![allow(dead_code, unused_variables)]
+use crate::config::{read_certificate_config, read_csr_config};
+use clap::{Parser, Subcommand};
 
+mod certificate;
 mod config;
-mod generate;
+mod csr;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(name = "program", version, about = "Certificate tool", long_about = None)]
 struct Args {
-    /// the config file for defining the certifcates to create
-    #[arg(
-        short,
-        long,
-        default_value_t = String::from("./examples/test_ed25519.yaml"))]
-    config_file: String,
-    /// directory to store the created certificates and keys
-    #[arg(short, long,default_value_t = String::from("./certs"))]
-    outputh_dir: String,
+    #[command(subcommand)]
+    command: Commands,
 }
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Create certificates
+    CERT {
+        /// The config file for defining the certificates to create
+        #[arg(short, long, default_value = "./examples/test_ed25519.yaml")]
+        config_file: String,
+        #[arg(short, long, default_value = "./certs")]
+        output_dir: String,
+    },
+    /// Create certificate signing requests
+    CSR {
+        #[arg(short, long, default_value = "./examples/test_csr.yaml")]
+        config_file: String,
+        #[arg(short, long, default_value = "./certs")]
+        output_dir: String,
+    },
+
+    /// Create certificate revocation lists
+    CRL {
+        #[arg(short, long, default_value = "./examples/test_crl.yaml")]
+        config_file: String,
+        #[arg(short, long, default_value = "./certs")]
+        output_dir: String,
+    },
+}
+
+fn main() {
     let args = Args::parse();
-    let flat_certs = read_config(args.config_file)?;
-    create(flat_certs, args.outputh_dir)?;
-    Ok(())
+
+    match args.command {
+        Commands::CERT {
+            config_file,
+            output_dir,
+        } => match read_certificate_config(config_file) {
+            Ok(flat_certs) => match certificate::create(flat_certs, output_dir) {
+                Ok(_) => println!("Created all certificates"),
+                Err(e) => println!("Failed to generate all certs, with error: {}", e),
+            },
+            Err(e) => println!("Failed to read certificate config file with error: {}", e),
+        },
+        Commands::CSR {
+            config_file,
+            output_dir,
+        } => match read_csr_config(config_file) {
+            Ok(data) => {
+                match csr::create_csr(data.csrs, &output_dir) {
+                    Ok(_) => println!("Created all CSR"),
+                    Err(e) => println!("Failed to create all CSR with error {}", e),
+                }
+                match csr::sign_requests(data.to_sign, &output_dir) {
+                    Ok(_) => println!("Signed all requests"),
+                    Err(e) => println!("Failed to sign requests with error {}", e),
+                }
+            }
+            Err(e) => println!("Failed to read csr config file with error: {}", e),
+        },
+        Commands::CRL {
+            config_file,
+            output_dir,
+        } => {
+            println!("Not implemented yet");
+        }
+    }
 }
