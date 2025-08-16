@@ -192,9 +192,9 @@ dependencies = [
 
 [[package]]
 name = "cert-helper"
-version = "0.3.13"
+version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc48191f29f8e8d5c51d7b1290925d833938ffc6d2b81a34f8c9354cc7ad9d1a"
+checksum = "cf130cab89fc7d51aae9caac239a6f162a26940c60505c85ac32b6f6da4f17c8"
 dependencies = [
  "bit-vec",
  "chrono",
