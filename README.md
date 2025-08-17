@@ -29,7 +29,7 @@ in the go version CertificateBar.
 
 ## Dependencies
 
-### Dependency: `cert-helper` v0.3.13
+### Dependency: `cert-helper` v0.4.0
 
 This project uses `cert-helper`, a utility designed to simplify the creation and management of X.509 certificates using OpenSSL. It provides a structured and automated approach to:
 
@@ -44,7 +44,7 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 - Simplifies configuration for PKI setups
 - Suitable for development and testing
 
-**Version:** `0.3.13`
+**Version:** `0.4.0`
 **License:** MIT
 **Crate:** https://crates.io/crates/cert-helper
 

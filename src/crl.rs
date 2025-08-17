@@ -51,8 +51,7 @@ pub fn handle<C: AsRef<Path>>(
             vec![CrlReason::from(r.cert_info.reason)],
         );
     }
-    let crl_signed = builder.build_and_sign();
-    let wrapper = X509CrlWrapper::from_der(&crl_signed)?;
+    let wrapper = builder.build_and_sign()?;
     let (dir, file) =
         split_path_and_filename(&crl_data.crl_file).ok_or("failed to split path and filename")?;
     wrapper.save_as_pem(output_dir, file)?;
