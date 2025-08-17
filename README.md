@@ -66,7 +66,7 @@ The structure of the config file is given bellow, certificates label conatins a 
 (See config directory for a basic example setup.) The example below is a self signed certificate valid
 for domains `www.foo.se, www.dront.se, www.fro.se` and using a 2048 RSA key.
 
-```
+```yaml
 certificates:
   - certificate:
       id: mainca
@@ -91,7 +91,7 @@ certificates:
 
 example with CA on file and use that to generate a middle certificate with a leaf
 
-```
+```yaml
 certificates:
   - certificate:
       id: intercdfromfile
@@ -116,7 +116,6 @@ certificates:
       hashalg: SHA256
       usage:
         - contentcommitment
-
 ```
 
 Create CA certificate with Ed25519 for signing see `examples/test_ed25519.yaml`
@@ -125,8 +124,45 @@ Create CA certificate with Ed25519 for signing see `examples/test_ed25519.yaml`
 
 This configuration file supports two main sections:
 
-An example configuration file is available at:
-[examples/test_csr.yaml](examples/test_csr.yaml)
+An example configuration file
+
+```yaml
+csrs:
+  - csr:
+      id: csr1
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+  - csr:
+      id: csr2
+      pkix:
+        commonname: "Example"
+        country: "SE"
+        organization: "Example2"
+      keytype: RSA
+      altnames:
+        - example2.com,
+        - www.example2.com
+      hashalg: SHA256
+      keylength: 2048
+      usage: [serverauth, clientauth]
+signing_requests:
+  - signing_request:
+      csr_pem_file: ./certs/csr1_csr.pem
+      validto: "2030-01-01"
+      ca: true
+      signer:
+        cert_pem_file: ./examples/maincadoc_cert.pem
+        private_key_pem_file: ./examples/maincadoc_pkey.pem
+```
 
 - **`csrs`**: Defines one or more Certificate Signing Request (CSR) specifications.
 - **`signing_requests`**: Defines one or more signing operations for existing CSR files.
