@@ -461,13 +461,7 @@ fn verify_key_usage_for_signing(cert: &Certificate) -> Result<(), String> {
                     }
 
                     return Err(format!(
-                        "Certificate has Key Usage extension but does not allow signing. \
-                        Found key usage: digital_signature={}, key_cert_sign={}, \
-                        content_commitment={}, key_encipherment={}",
-                        key_usage.digital_signature(),
-                        key_usage.key_cert_sign(),
-                        key_usage.non_repudiation(),
-                        key_usage.key_encipherment()
+                        "Certificate has Key Usage extension but does not allow signing."
                     ));
                 }
                 Err(e) => {
@@ -502,13 +496,7 @@ fn verify_key_usage_for_encryption(cert: &Certificate) -> Result<(), String> {
                     }
 
                     return Err(format!(
-                        "Certificate has Key Usage extension but does not allow signing. \
-                        Found key usage: digital_signature={}, key_cert_sign={}, \
-                        content_commitment={}, key_encipherment={}",
-                        key_usage.digital_signature(),
-                        key_usage.key_cert_sign(),
-                        key_usage.non_repudiation(),
-                        key_usage.key_encipherment()
+                        "Certificate has Key Usage extension but does not allow encryption."
                     ));
                 }
                 Err(e) => {
