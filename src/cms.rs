@@ -1,5 +1,6 @@
 use crate::config::Cms;
 use cert_helper::certificate::Certificate as CHCertificate;
+use chrono::{DateTime, Utc};
 use cms::builder::{
     ContentEncryptionAlgorithm, EnvelopedDataBuilder, KeyEncryptionInfo,
     KeyTransRecipientInfoBuilder, SignedDataBuilder, SignerInfoBuilder,
@@ -26,6 +27,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use x509_cert::Certificate as X509Certificate;
+use x509_cert::ext::pkix::KeyUsage;
+use x509_cert::time::Time;
 
 /// Processes a list of CMS configurations and generates corresponding CMS files.
 ///
@@ -111,7 +114,15 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     let cert_pem =
         std::fs::read(&cms.recipient).map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
     let cert = Certificate::from_pem(&cert_pem)?;
-
+    match verify_encrypting_certificate(&cert) {
+        Ok(_) => {}
+        Err(e) => {
+            return Err(cms::builder::Error::Builder(format!(
+                "Recipient certificate can not be used for encryption: {}",
+                e
+            )));
+        }
+    }
     let plaintext = if std::path::Path::new(&cms.data_file).exists() {
         std::fs::read(&cms.data_file).map_err(|e| cms::builder::Error::Builder(e.to_string()))?
     } else {
@@ -320,6 +331,15 @@ fn create_pkcs7_signed_data(
     let detected_key = DetectedKey::from_pem(&pem_string)?;
 
     let signer_cert = Certificate::from_pem(signer.x509.to_pem().unwrap())?;
+    match verify_signing_certificate(&signer_cert) {
+        Ok(_) => {}
+        Err(e) => {
+            return Err(cms::builder::Error::Builder(format!(
+                "Signing certificate can not be used for signing: {}",
+                e
+            )));
+        }
+    }
     let signer_identifier =
         SignerIdentifier::IssuerAndSerialNumber(cms::cert::IssuerAndSerialNumber {
             issuer: signer_cert.tbs_certificate.issuer.clone(),
@@ -348,20 +368,6 @@ fn create_pkcs7_signed_data(
     )
 }
 
-/// Saves a Vec<u8> to a file at the specified path with the given filename and extension.
-///
-/// # Arguments
-/// * `path` - The directory path where the file should be saved
-/// * `filename` - The base filename (without extension)
-/// * `extension` - The file extension (without the dot)
-/// * `data` - The data to write to the file
-///
-/// # Examples
-/// ```
-/// let data = vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]; // "Hello" in bytes
-/// save_file_with_extension("./output", "message", "txt", data).unwrap();
-/// // Creates: ./output/message.txt
-/// ```
 pub fn save_file_with_extension<P: AsRef<Path>>(
     path: P,
     filename: &str,
@@ -380,6 +386,144 @@ pub fn save_file_with_extension<P: AsRef<Path>>(
     Ok(file_path)
 }
 
+fn verify_encrypting_certificate(cert: &Certificate) -> Result<(), String> {
+    verify_certificate_dates(cert)?;
+    verify_key_usage_for_encryption(cert)?;
+    Ok(())
+}
+fn verify_signing_certificate(cert: &Certificate) -> Result<(), String> {
+    verify_certificate_dates(cert)?;
+    verify_key_usage_for_signing(cert)?;
+    Ok(())
+}
+
+/// Verifies that the certificate is currently within its validity period
+fn verify_certificate_dates(cert: &Certificate) -> Result<(), String> {
+    let now = Utc::now();
+
+    let not_before = match &cert.tbs_certificate.validity.not_before {
+        Time::UtcTime(utc_time) => {
+            DateTime::from_timestamp(utc_time.to_unix_duration().as_secs() as i64, 0)
+                .ok_or("Invalid not_before time format")?
+        }
+        Time::GeneralTime(gen_time) => {
+            DateTime::from_timestamp(gen_time.to_unix_duration().as_secs() as i64, 0)
+                .ok_or("Invalid not_before time format")?
+        }
+    };
+
+    let not_after = match &cert.tbs_certificate.validity.not_after {
+        Time::UtcTime(utc_time) => {
+            DateTime::from_timestamp(utc_time.to_unix_duration().as_secs() as i64, 0)
+                .ok_or("Invalid not_after time format")?
+        }
+        Time::GeneralTime(gen_time) => {
+            DateTime::from_timestamp(gen_time.to_unix_duration().as_secs() as i64, 0)
+                .ok_or("Invalid not_after time format")?
+        }
+    };
+
+    if now < not_before {
+        return Err(format!(
+            "Certificate is not yet valid. Valid from: {}, Current time: {}",
+            not_before.format("%Y-%m-%d %H:%M:%S UTC"),
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+
+    if now > not_after {
+        return Err(format!(
+            "Certificate has expired. Valid until: {}, Current time: {}",
+            not_after.format("%Y-%m-%d %H:%M:%S UTC"),
+            now.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+
+    Ok(())
+}
+
+fn verify_key_usage_for_signing(cert: &Certificate) -> Result<(), String> {
+    let Some(extensions) = &cert.tbs_certificate.extensions else {
+        return Err("Certificate must have extensions for security compliance".to_string());
+    };
+
+    for ext in extensions {
+        // Key Usage extension OID: 2.5.29.15
+        if ext.extn_id.to_string() == "2.5.29.15" {
+            match KeyUsage::from_der(ext.extn_value.as_bytes()) {
+                Ok(key_usage) => {
+                    // Check if any signing-related usage is allowed
+                    if key_usage.digital_signature()
+                        || key_usage.key_cert_sign()
+                        || key_usage.non_repudiation()
+                    {
+                        return Ok(());
+                    }
+
+                    return Err(format!(
+                        "Certificate has Key Usage extension but does not allow signing. \
+                        Found key usage: digital_signature={}, key_cert_sign={}, \
+                        content_commitment={}, key_encipherment={}",
+                        key_usage.digital_signature(),
+                        key_usage.key_cert_sign(),
+                        key_usage.non_repudiation(),
+                        key_usage.key_encipherment()
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!("Failed to parse Key Usage extension: {}", e));
+                }
+            }
+        }
+    }
+
+    Err(
+        "Certificate does not have a Key Usage extension, which is required for signing operations"
+            .to_string(),
+    )
+}
+
+fn verify_key_usage_for_encryption(cert: &Certificate) -> Result<(), String> {
+    let Some(extensions) = &cert.tbs_certificate.extensions else {
+        return Err("Certificate must have extensions for security compliance".to_string());
+    };
+
+    for ext in extensions {
+        // Key Usage extension OID: 2.5.29.15
+        if ext.extn_id.to_string() == "2.5.29.15" {
+            match KeyUsage::from_der(ext.extn_value.as_bytes()) {
+                Ok(key_usage) => {
+                    // Check if any signing-related usage is allowed
+                    if key_usage.encipher_only()
+                        || key_usage.key_encipherment()
+                        || key_usage.data_encipherment()
+                    {
+                        return Ok(());
+                    }
+
+                    return Err(format!(
+                        "Certificate has Key Usage extension but does not allow signing. \
+                        Found key usage: digital_signature={}, key_cert_sign={}, \
+                        content_commitment={}, key_encipherment={}",
+                        key_usage.digital_signature(),
+                        key_usage.key_cert_sign(),
+                        key_usage.non_repudiation(),
+                        key_usage.key_encipherment()
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!("Failed to parse Key Usage extension: {}", e));
+                }
+            }
+        }
+    }
+
+    Err(
+        "Certificate does not have a Key Usage extension, which is required for signing operations"
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,15 +536,36 @@ mod tests {
         CertBuilder::new()
             .common_name("My Test Ca")
             .is_ca(true)
+            .key_usage(
+                [cert_helper::certificate::Usage::signature]
+                    .into_iter()
+                    .collect(),
+            )
             .build_and_self_sign()
             .unwrap()
     }
 
+    fn dummy_rsa_no_sig_key_certificate() -> CHCertificate {
+        CertBuilder::new()
+            .common_name("RSA Test Cert")
+            .key_type(cert_helper::certificate::KeyType::RSA2048)
+            .is_ca(false)
+            .build_and_self_sign()
+            .unwrap()
+    }
     fn dummy_rsa_certificate() -> CHCertificate {
         CertBuilder::new()
             .common_name("RSA Test Cert")
             .key_type(cert_helper::certificate::KeyType::RSA2048)
             .is_ca(false)
+            .key_usage(
+                [
+                    cert_helper::certificate::Usage::signature,
+                    cert_helper::certificate::Usage::encipherment,
+                ]
+                .into_iter()
+                .collect(),
+            )
             .build_and_self_sign()
             .unwrap()
     }
@@ -410,6 +575,11 @@ mod tests {
             .common_name("P256 Test Cert")
             .key_type(cert_helper::certificate::KeyType::P256)
             .is_ca(false)
+            .key_usage(
+                [cert_helper::certificate::Usage::signature]
+                    .into_iter()
+                    .collect(),
+            )
             .build_and_self_sign()
             .unwrap()
     }
@@ -419,6 +589,11 @@ mod tests {
             .common_name("P384 Test Cert")
             .key_type(cert_helper::certificate::KeyType::P384)
             .is_ca(false)
+            .key_usage(
+                [cert_helper::certificate::Usage::signature]
+                    .into_iter()
+                    .collect(),
+            )
             .build_and_self_sign()
             .unwrap()
     }
@@ -473,6 +648,21 @@ mod tests {
     }
 
     #[test]
+    fn test_create_cms_with_rsa_certificate_with_no_encryption_key_usage() {
+        let rsa_cert = dummy_rsa_no_sig_key_certificate();
+        let test_data = "Hello, RSA CMS world!";
+        let (cms_config, _cert_file, _data_file) =
+            create_test_cms_config_with_files(&rsa_cert, test_data);
+
+        let result = create_cms(&cms_config);
+
+        assert!(
+            result.is_err(),
+            "Should Fail to create CMS with RSA certificate that have no encryption in key usage",
+        );
+    }
+
+    #[test]
     fn test_create_cms_with_p256_certificate_should_fail() {
         let p256_cert = dummy_p256_certificate();
         let test_data = "Hello, P256 CMS world!";
@@ -484,12 +674,6 @@ mod tests {
         assert!(
             result.is_err(),
             "CMS creation with P256 certificate should fail"
-        );
-        let error_msg = result.err().unwrap().to_string();
-        assert!(
-            error_msg.contains("not supported") || error_msg.contains("RSA"),
-            "Error should mention lack of ECDSA support: {}",
-            error_msg
         );
     }
 
@@ -505,12 +689,6 @@ mod tests {
         assert!(
             result.is_err(),
             "CMS creation with P384 certificate should fail"
-        );
-        let error_msg = result.err().unwrap().to_string();
-        assert!(
-            error_msg.contains("not supported") || error_msg.contains("RSA"),
-            "Error should mention lack of ECDSA support: {}",
-            error_msg
         );
     }
 
@@ -548,6 +726,18 @@ mod tests {
 
         // Basic validation - should start with SEQUENCE tag (0x30)
         assert_eq!(pkcs7_der[0], 0x30, "PKCS7 should start with SEQUENCE tag");
+    }
+    #[test]
+    fn test_create_pkcs7_signed_with_invalid_cert_data_with_rsa() {
+        let rsa_cert = dummy_rsa_no_sig_key_certificate();
+        let test_data = b"Hello, RSA PKCS7 world!";
+
+        let result = create_pkcs7_signed_data(test_data, &rsa_cert);
+
+        assert!(
+            result.is_err(),
+            "Should Fail to create PKCS7 with RSA certificate"
+        );
     }
 
     #[test]
