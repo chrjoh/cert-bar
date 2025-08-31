@@ -10,13 +10,13 @@ use cms::cert::x509::der::{Decode, Encode};
 use cms::content_info::ContentInfo;
 use cms::enveloped_data::RecipientIdentifier;
 use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
-use der::asn1::ObjectIdentifier;
+use der::asn1::{ObjectIdentifier, OctetString, SetOfVec};
 use der::{Any, Tag, TagNumber};
 use ecdsa::SigningKey as EcdsaSigningKey;
 use ecdsa::der::Signature as EcdsaDerSignature;
 use p256::{NistP256, SecretKey as P256SecretKey};
 use p384::{NistP384, SecretKey as P384SecretKey};
-use rand::thread_rng;
+use rand::{RngCore, thread_rng};
 use rsa::pkcs1::der::DecodePem;
 use rsa::pkcs1v15::SigningKey;
 use rsa::pkcs8::DecodePrivateKey;
@@ -27,6 +27,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use x509_cert::Certificate as X509Certificate;
+use x509_cert::attr::{Attribute, AttributeValue};
 use x509_cert::ext::pkix::KeyUsage;
 use x509_cert::time::Time;
 
@@ -230,17 +231,33 @@ impl DetectedKey {
         digest_algorithm: AlgorithmIdentifierOwned,
         x509_cert: X509Certificate,
     ) -> Result<Vec<u8>, cms::builder::Error> {
-        // Return Vec<u8> instead of SignedData
+        const RFC8894_ID_SENDER_NONCE: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("2.16.840.1.113733.1.9.5");
+        let mut nonce_bytes = [0u8; 32];
+        let mut rng = rand::thread_rng();
+        rng.fill_bytes(&mut nonce_bytes);
+        let mut sender_nonce_value: SetOfVec<AttributeValue> = Default::default();
+        let nonce = OctetString::new(nonce_bytes).unwrap();
+        sender_nonce_value
+            .insert(Any::new(Tag::OctetString, nonce.as_bytes()).unwrap())
+            .unwrap();
+        let sender_nonce = Attribute {
+            oid: RFC8894_ID_SENDER_NONCE,
+            values: sender_nonce_value,
+        };
+
         match self {
             DetectedKey::Rsa(signing_key) => {
-                let signer_info_builder = SignerInfoBuilder::new(
+                let mut signer_info_builder = SignerInfoBuilder::new(
                     signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
                     None,
                 )?;
-
+                signer_info_builder
+                    .add_signed_attribute(sender_nonce)
+                    .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
@@ -256,14 +273,16 @@ impl DetectedKey {
             }
 
             DetectedKey::P256(signing_key) => {
-                let signer_info_builder = SignerInfoBuilder::new(
+                let mut signer_info_builder = SignerInfoBuilder::new(
                     signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
                     None,
                 )?;
-
+                signer_info_builder
+                    .add_signed_attribute(sender_nonce)
+                    .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
@@ -278,14 +297,16 @@ impl DetectedKey {
                 })
             }
             DetectedKey::P384(signing_key) => {
-                let signer_info_builder = SignerInfoBuilder::new(
+                let mut signer_info_builder = SignerInfoBuilder::new(
                     signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
                     None,
                 )?;
-
+                signer_info_builder
+                    .add_signed_attribute(sender_nonce)
+                    .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
