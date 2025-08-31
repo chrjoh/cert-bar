@@ -17,13 +17,10 @@ rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 tempfile = "3.20.0"
-const-oid = { version = "0.10.1", features = ["db"] }
 der = "0.7.10"
-sha2 = { version = "0.10.9", features = ["oid"] }                  #
+sha2 = { version = "0.10.9", features = ["oid"] }              #
 spki = "0.7.3"
 x509-cert = "0.2.5"
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 p384 = { version = "0.13", features = ["ecdsa", "pem"] }
-p224 = { version = "0.13", features = ["ecdsa", "pem"] }
-p521 = { version = "0.13", features = ["ecdsa", "pem", "sha512"] }
 ecdsa = { version = "0.16", features = ["signing", "digest"] }
