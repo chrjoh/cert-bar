@@ -1,0 +1,8 @@
+cmss:
+  - cms:
+      id: test1
+      signer:
+        cert_pem_file: "./certs/maincadoc_cert.pem"
+        private_key_pem_file: "./certs/maincadoc_pkey.pem"
+      recipient: ./certs/client2encrypt_cert.pem
+      data_file: ./examples/message.txt

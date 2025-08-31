@@ -8,8 +8,12 @@ certificates:
         country: SE
         organization: test
         organizationunit: testcaecdsa
-      keytype: P521
+      keytype: P256
+      keylength: 2048
       hashalg: SHA256
+      usage:
+        - signature
+        - encipherment
       validto: 2034-01-01
   - certificate:
       id: intercadoc
@@ -69,8 +73,8 @@ certificates:
         country: SE
         organization: test
         organizationunit: testweb2
-      keytype: P224
-      keylength: 1024
+      keytype: RSA
+      keylength: 2048
       hashalg: SHA256
       altnames:
         - www.dront.se

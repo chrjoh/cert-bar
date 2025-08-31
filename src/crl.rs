@@ -2,7 +2,6 @@ use crate::config::CRL;
 use cert_helper::certificate::Certificate as CHCertificate;
 use cert_helper::crl::{CrlReason, X509CrlBuilder, X509CrlWrapper};
 use chrono::Utc;
-use std::fs;
 use std::path::Path;
 
 /// Updates or creates a Certificate Revocation List (CRL) based on the provided configuration.
@@ -37,17 +36,17 @@ pub fn handle<C: AsRef<Path>>(
         &crl_data.signer.cert_pem_file,
         &crl_data.signer.private_key_pem_file,
     )?;
-    let mut builder = if let Ok(existing) = fs::read(&crl_data.crl_file) {
-        let wrapper = X509CrlWrapper::read_as_pem(&crl_data.crl_file)?;
-        let der = wrapper.to_der()?;
+    let mut builder = if Path::new(&crl_data.crl_file).exists() {
+        let der = X509CrlWrapper::read_as_pem(&crl_data.crl_file)?.to_der()?;
         X509CrlBuilder::from_der(&der, signer.clone())?
     } else {
         X509CrlBuilder::new(signer.clone())
     };
+    let revocation_time = Utc::now();
     for r in crl_data.revoked {
         builder.add_revoked_cert_with_reason(
             r.cert_info.serial,
-            Utc::now(),
+            revocation_time,
             vec![CrlReason::from(r.cert_info.reason)],
         );
     }
