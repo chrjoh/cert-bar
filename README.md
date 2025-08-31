@@ -346,7 +346,7 @@ Each CMS entry contains:
 ### data_file
 
 - Type: String
-- Description: Path to the file containing the data to be encrypted in the CMS message. If the file doesn't exist, a default message "Hello CMS world!" will be used.
+- Description: Path to the file containing the data to be encrypted in the CMS message.
 
 ## Generated Output
 
