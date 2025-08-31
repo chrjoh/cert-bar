@@ -246,7 +246,7 @@ impl DetectedKey {
             values: sender_nonce_value,
         };
         const RFC8894_ID_MESSAGE_TYPE: ObjectIdentifier =
-            ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.12");
+            ObjectIdentifier::new_unwrap("2.16.840.1.113733.1.9.2");
         const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 
         let mut message_type_value: SetOfVec<AttributeValue> = Default::default();
