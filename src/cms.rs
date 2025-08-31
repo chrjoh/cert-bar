@@ -245,6 +245,18 @@ impl DetectedKey {
             oid: RFC8894_ID_SENDER_NONCE,
             values: sender_nonce_value,
         };
+        const RFC8894_ID_MESSAGE_TYPE: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.12");
+        const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
+
+        let mut message_type_value: SetOfVec<AttributeValue> = Default::default();
+        let message_type_oid = Any::new(Tag::ObjectIdentifier, DATA_OID.as_bytes())?;
+        message_type_value.insert(message_type_oid)?;
+
+        let message_type = Attribute {
+            oid: RFC8894_ID_MESSAGE_TYPE,
+            values: message_type_value,
+        };
 
         match self {
             DetectedKey::Rsa(signing_key) => {
@@ -257,6 +269,9 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
+                    .unwrap();
+                signer_info_builder
+                    .add_signed_attribute(message_type)
                     .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
@@ -283,6 +298,9 @@ impl DetectedKey {
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
                     .unwrap();
+                signer_info_builder
+                    .add_signed_attribute(message_type)
+                    .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
@@ -306,6 +324,9 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
+                    .unwrap();
+                signer_info_builder
+                    .add_signed_attribute(message_type)
                     .unwrap();
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
