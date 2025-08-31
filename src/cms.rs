@@ -27,6 +27,51 @@ use std::io;
 use std::path::{Path, PathBuf};
 use x509_cert::Certificate as X509Certificate;
 
+/// Processes a list of CMS configurations and generates corresponding CMS files.
+///
+/// This function handles the complete CMS generation workflow:
+/// 1. Creates encrypted CMS messages (EnvelopedData) for each configuration
+/// 2. Optionally creates signed CMS messages (SignedData) if a signer is provided
+/// 3. Saves the generated files to the specified output directory
+///
+/// # Arguments
+///
+/// * `cms_data` - A vector of CMS configurations to process
+/// * `output_dir` - The directory where generated CMS files will be saved
+///
+/// # Returns
+///
+/// * `Ok(())` - If all CMS configurations were processed successfully
+/// * `Err(Box<dyn std::error::Error>)` - If there was an error loading signer certificates
+///
+/// # Generated Files
+///
+/// For each CMS configuration with ID "example":
+/// * `{output_dir}/{id}.cms` - Encrypted CMS message in DER format
+/// * `{output_dir}/{id}.pkcs7` - Signed CMS message in PKCS#7 format (only if signer is provided)
+///
+/// # Behavior
+///
+/// * **Non-fatal errors**: If CMS creation fails for one configuration, the function continues
+///   processing remaining configurations and logs the error to stderr
+/// * **Fatal errors**: Only signer certificate loading errors cause the function to return early
+/// * **File overwriting**: Existing files with the same names will be overwritten
+///
+/// # Cryptographic Operations
+///
+/// * **Encryption**: Uses AES-256-CBC for content encryption, RSA key transport for key encryption
+/// * **Signing**: Supports RSA, P-256, and P-384 keys with SHA-256 hashing
+/// * **Recipient limitations**: Only RSA certificates are supported for encryption recipients
+///
+/// # Error Handling
+///
+/// Individual CMS generation failures are logged but don't stop processing:
+/// ```text
+/// Failed to create cms: Unsupported key algorithm for encryption. Found OID: 1.2.840.10045.3.1.7
+/// Failed to create pkcs7 signed data: Invalid key format
+/// ```
+///
+/// Only signer certificate loading errors cause early termination.
 pub fn handle<C: AsRef<Path>>(
     cms_data: Vec<Cms>,
     output_dir: C,
@@ -34,6 +79,8 @@ pub fn handle<C: AsRef<Path>>(
     for cms in &cms_data {
         match create_cms(&cms) {
             Ok(res) => {
+                save_file_with_extension(&output_dir, &cms.id, "cms", &res)
+                    .expect("failed to save");
                 if let Some(signer) = &cms.signer {
                     let signer_cert = CHCertificate::load_cert_and_key(
                         &signer.cert_pem_file,
@@ -41,7 +88,7 @@ pub fn handle<C: AsRef<Path>>(
                     )?;
                     match create_pkcs7_signed_data(&res, &signer_cert) {
                         Ok(pkcs7_der) => {
-                            save_file_with_extension(&output_dir, &cms.id, "pkcs7", pkcs7_der)
+                            save_file_with_extension(&output_dir, &cms.id, "pkcs7", &pkcs7_der)
                                 .expect("failed to save cms file");
                         }
                         Err(e) => {
@@ -49,9 +96,6 @@ pub fn handle<C: AsRef<Path>>(
                             continue;
                         }
                     }
-                } else {
-                    save_file_with_extension(&output_dir, &cms.id, "cms", res)
-                        .expect("failed to save");
                 }
             }
             Err(e) => {
@@ -102,28 +146,25 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     let rsa_public_key = RsaPublicKey::from_pkcs1_der(public_key_der)
         .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
 
-    // Create key encryption info for RSA
     let key_encryption_info = KeyEncryptionInfo::Rsa(rsa_public_key);
 
     let mut rng = thread_rng();
 
-    // Create the recipient info builder first
     let recipient_builder =
         KeyTransRecipientInfoBuilder::new(recipient_id, key_encryption_info, &mut rng)?;
 
     // Create the EnvelopedDataBuilder and add recipient in one go
     let mut builder = EnvelopedDataBuilder::new(
-        None,                                  // originator_info - typically None for basic usage
+        None,                                  // originator_info
         &plaintext,                            // unencrypted_content
         ContentEncryptionAlgorithm::Aes256Cbc, // content_encryption_algorithm
-        None, // unprotected_attributes - typically None for basic usage
+        None,                                  // unprotected_attributes
     )?;
 
-    // Add the recipient to the builder
     builder.add_recipient_info(recipient_builder)?;
     const ENVELOPED_DATA_OID: ObjectIdentifier =
         ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.3");
-    // Build the EnvelopedData with a fresh RNG
+    // Build the EnvelopedData with a fresh RNG to avoid issues with the cms crate
     let mut rng2 = thread_rng();
     let enveloped = builder.build_with_rng(&mut rng2)?;
     let enveloped_der = enveloped.to_der()?;
@@ -135,85 +176,18 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
         content,
     };
 
-    // Serialize the EnvelopedData directly
     let der_encoded = content_info.to_der()?;
 
     Ok(der_encoded)
 }
 
-//fn create_pkcs7_signed_data(
-//    data: &[u8],
-//    signer: &CHCertificate,
-//) -> Result<Vec<u8>, cms::builder::Error> {
-//    const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
-//    let encapsulated_content = EncapsulatedContentInfo {
-//        econtent_type: DATA_OID, // This is key!
-//        econtent: Some(Any::new(Tag::OctetString, data)?),
-//    };
-//    let private_key = signer
-//        .pkey
-//        .as_ref()
-//        .ok_or("Private key is required for signing")
-//        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
-//
-//    let pem_bytes = private_key
-//        .private_key_to_pem_pkcs8()
-//        .map_err(|e| format!("Failed to convert private key to PEM: {}", e))
-//        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
-//
-//    let pem_string = String::from_utf8(pem_bytes)
-//        .map_err(|e| format!("Failed to convert PEM bytes to string: {}", e))
-//        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
-//
-//    let rsa_private_key = RsaPrivateKey::from_pkcs8_pem(&pem_string)
-//        .map_err(|e| format!("Failed to parse RSA private key: {}", e))
-//        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
-//
-//    let signer_key = SigningKey::<Sha256>::new(rsa_private_key);
-//    let signer_cert = Certificate::from_pem(signer.x509.to_pem().unwrap())?;
-//    let signer_identifier =
-//        SignerIdentifier::IssuerAndSerialNumber(cms::cert::IssuerAndSerialNumber {
-//            issuer: signer_cert.tbs_certificate.issuer.clone(),
-//            serial_number: signer_cert.tbs_certificate.serial_number.clone(),
-//        });
-//    const SHA256_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
-//    let digest_algorithm = AlgorithmIdentifierOwned {
-//        oid: SHA256_OID,
-//        parameters: None,
-//    };
-//
-//    let signer_info_builder = SignerInfoBuilder::new(
-//        &signer_key,
-//        signer_identifier,
-//        digest_algorithm.clone(),
-//        &encapsulated_content,
-//        None, // No signed attributes for now
-//    )?;
-//    let openssl_pem = signer.x509.to_pem().map_err(|e| {
-//        cms::builder::Error::Builder(format!("Failed to convert certificate to PEM: {}", e))
-//    })?;
-//    let x509_cert = X509Certificate::from_pem(&openssl_pem).map_err(|e| {
-//        cms::builder::Error::Builder(format!("Failed to parse x509 certificate: {}", e))
-//    })?;
-//    let mut signed_builder = SignedDataBuilder::new(&encapsulated_content);
-//    let signed_data = signed_builder
-//        .add_digest_algorithm(digest_algorithm)?
-//        .add_certificate(cms::cert::CertificateChoices::Certificate(x509_cert))?
-//        .add_signer_info::<SigningKey<Sha256>, rsa::pkcs1v15::Signature>(signer_info_builder)?
-//        .build()?;
-//
-//    let signed_der = signed_data.to_der()?;
-//
-//    Ok(signed_der)
-//}
-/////////
 #[derive(Debug)]
 enum DetectedKey {
     Rsa(SigningKey<Sha256>),
     P256(EcdsaSigningKey<NistP256>),
     P384(EcdsaSigningKey<NistP384>),
-    // Easy to add new variants here
 }
+
 impl DetectedKey {
     fn from_pem(pem_string: &str) -> Result<Self, cms::builder::Error> {
         // Try RSA first
@@ -392,7 +366,7 @@ pub fn save_file_with_extension<P: AsRef<Path>>(
     path: P,
     filename: &str,
     extension: &str,
-    data: Vec<u8>,
+    data: &[u8],
 ) -> Result<PathBuf, io::Error> {
     let dir_path = path.as_ref();
     if !dir_path.exists() {

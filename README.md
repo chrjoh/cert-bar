@@ -21,9 +21,10 @@ in the go version CertificateBar.
 
 - **CSR Generation**: Easily generate Certificate Signing Requests (CSRs) with customizable subject fields, key types, and extensions.
 - **Certificate Construction**: Automatically construct certificates from CSRs using specified signing credentials.
-- **Combined Workflow**: When both CSR definitions and signing requests are provided, the tool can generate and sign certificates in a single run.
+- **Combined Workflow**: When both CSR definitions and signing requests are provided, the tool can generate sign certificates in a single run.
 - **Configurable via YAML**: Define CSRs and signing operations in a single configuration file.
 - **CRL generation**: Create or update CRL with revoked certificates.
+- **CMS creating and PKCS7 signing**: Note due to limitations in crates used only RSA can be used for encrypting the AES key used to encrypt the content. Also for signing only RSA, P256, P384 with SHA256, can be used.
 
 ---
 
@@ -53,9 +54,10 @@ This project uses `cert-helper`, a utility designed to simplify the creation and
 The program takes three arguments type to create, the yaml config that defines what to create and an output directory for the created items.
 
 ```bash
-cargo run -- cert--config-file ./examples/test.yaml --output-dir ./certs
+cargo run -- cert --config-file ./examples/test.yaml --output-dir ./certs
 cargo run -- csr --config-file ./examples/test_csr.yaml --output-dir ./certs
 cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
+cargo run -- cms --config-file ./examples/cms_config.yaml --output-dir ./cms_data
 ```
 
 ## Config
@@ -277,6 +279,103 @@ Each entry contains:
     - `Unspecified`
     - `KeyCompromise`
     - `CaCompromise`
+
+# Cryptographic Message Syntax (CMS)
+
+This YAML configuration file defines the structure for generating CMS (Cryptographic Message Syntax) messages, which provide encrypted and optionally signed data containers.
+
+## Structure
+
+```yaml
+cmss:
+  - cms:
+      id: test1
+      signer:
+        cert_pem_file: "./certs/maincadoc_cert.pem"
+        private_key_pem_file: "./certs/maincadoc_pkey.pem"
+      recipient: ./certs/client2encrypt_cert.pem
+      data_file: ./examples/message.txt
+```
+
+## Fields
+
+### cmss
+
+- Type: List
+- Description: A list of CMS message configurations to be generated.
+
+Each CMS entry contains:
+
+#### cms
+
+- Type: Object
+- Description: Defines a single CMS message configuration.
+
+### id
+
+- Type: String
+- Description: A unique identifier for this CMS configuration. Used for logging and identification purposes.
+- Example: "test1"
+
+### signer (Optional)
+
+- Type: Object
+- Description: Contains the certificate and private key used to create a digital signature for the CMS message. If provided, the CMS message will be both encrypted and signed.
+- Supported Key Types: RSA, P-256 (secp256r1), P-384 (secp384r1)
+- Hash Algorithm: SHA-256
+- If not present the CMS message will only be encrypted.
+
+#### cert_pem_file
+
+- Type: String
+- Description: Path to the PEM-encoded certificate used for signing the CMS message.
+
+#### private_key_pem_file
+
+- Type: String
+- Description: Path to the PEM-encoded private key corresponding to the signing certificate.
+
+### recipient
+
+- Type: String
+- Description: Path to the PEM-encoded certificate of the recipient who will be able to decrypt the CMS message.
+- Supported Key Types: RSA only (for AES key encryption)
+- Note: Currently, only RSA certificates are supported for CMS envelope encryption due to library limitations.
+- Due to limitations in the cms crate multiple recipients are not supported.
+
+### data_file
+
+- Type: String
+- Description: Path to the file containing the data to be encrypted in the CMS message. If the file doesn't exist, a default message "Hello CMS world!" will be used.
+
+## Generated Output
+
+The CMS generation process creates the following files:
+
+1. test1.der: The encrypted CMS message in DER (Distinguished Encoding Rules) format
+2. test1.pkcs7: If a signer is provided, this file contains the signed version of the CMS message in PKCS#7 format
+
+## Cryptographic Details
+
+### Encryption (EnvelopedData)
+
+- Content Encryption: AES-256-CBC
+- Key Encryption: RSA key transport
+- Supported Recipient Key Types: RSA only
+
+### Signing (SignedData) - Optional
+
+- Supported Signer Key Types: RSA, P-256 (secp256r1), P-384 (secp384r1)
+- Hash Algorithm: SHA-256
+- Signature Algorithm:
+  - RSA: RSASSA-PKCS1-v1_5 with SHA-256
+  - ECDSA: ECDSA with SHA-256
+
+## Limitations
+
+- Recipient certificates must use RSA keys for envelope encryption
+- ECDSA recipient certificates are not supported for encryption due to current library limitations
+- Signing supports multiple key types but encryption is limited to RSA
 
 # Options
 
