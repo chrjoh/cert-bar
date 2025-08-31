@@ -44,7 +44,7 @@ enum Commands {
     CMS {
         #[arg(short, long, default_value = "./examples/test_cms.yaml")]
         config_file: String,
-        #[arg(short, long, default_value = "./certs")]
+        #[arg(short, long, default_value = "./cms_data")]
         output_dir: String,
     },
 }
@@ -94,10 +94,10 @@ fn main() {
             output_dir,
         } => match read_cms_config(config_file) {
             Ok(data) => match cms::handle(data, output_dir) {
-                Ok(_) => println!("Created cms "),
+                Ok(_) => println!("Created cms/pkcs7 data file"),
                 Err(e) => println!("Failed to handle CMD with error {}", e),
             },
-            Err(e) => println!("Failed to read Cns config file with error: {}", e),
+            Err(e) => println!("Failed to read Cms config file with error: {}", e),
         },
     }
 }

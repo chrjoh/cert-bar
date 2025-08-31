@@ -23,7 +23,8 @@ use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
 use sha2::Sha256;
 use spki::AlgorithmIdentifierOwned;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use x509_cert::Certificate as X509Certificate;
 
 pub fn handle<C: AsRef<Path>>(
@@ -31,10 +32,8 @@ pub fn handle<C: AsRef<Path>>(
     output_dir: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for cms in &cms_data {
-        println!("Handling CMS: {:?}", cms);
         match create_cms(&cms) {
             Ok(res) => {
-                fs::write("cms_message.der", &res).expect("failed to save");
                 if let Some(signer) = &cms.signer {
                     let signer_cert = CHCertificate::load_cert_and_key(
                         &signer.cert_pem_file,
@@ -42,14 +41,17 @@ pub fn handle<C: AsRef<Path>>(
                     )?;
                     match create_pkcs7_signed_data(&res, &signer_cert) {
                         Ok(pkcs7_der) => {
-                            fs::write("cms_message.pkcs7", &pkcs7_der)
-                                .expect("failed to save pkcs7 file");
+                            save_file_with_extension(&output_dir, &cms.id, "pkcs7", pkcs7_der)
+                                .expect("failed to save cms file");
                         }
                         Err(e) => {
                             eprintln!("Failed to create pkcs7 signed data: {}", e);
                             continue;
                         }
                     }
+                } else {
+                    save_file_with_extension(&output_dir, &cms.id, "cms", res)
+                        .expect("failed to save");
                 }
             }
             Err(e) => {
@@ -371,6 +373,39 @@ fn create_pkcs7_signed_data(
         x509_cert,
     )
 }
+
+/// Saves a Vec<u8> to a file at the specified path with the given filename and extension.
+///
+/// # Arguments
+/// * `path` - The directory path where the file should be saved
+/// * `filename` - The base filename (without extension)
+/// * `extension` - The file extension (without the dot)
+/// * `data` - The data to write to the file
+///
+/// # Examples
+/// ```
+/// let data = vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]; // "Hello" in bytes
+/// save_file_with_extension("./output", "message", "txt", data).unwrap();
+/// // Creates: ./output/message.txt
+/// ```
+pub fn save_file_with_extension<P: AsRef<Path>>(
+    path: P,
+    filename: &str,
+    extension: &str,
+    data: Vec<u8>,
+) -> Result<PathBuf, io::Error> {
+    let dir_path = path.as_ref();
+    if !dir_path.exists() {
+        fs::create_dir_all(dir_path)?;
+    }
+
+    let file_path = dir_path.join(filename).with_extension(extension);
+
+    fs::write(&file_path, data)?;
+
+    Ok(file_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

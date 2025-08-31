@@ -304,7 +304,6 @@ pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::er
 
 pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config).expect("No config file found");
-    println!("{}", yaml_str);
 
     let cmss: CMSS = serde_yaml::from_str(&yaml_str)?;
     let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
