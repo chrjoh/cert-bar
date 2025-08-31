@@ -207,6 +207,23 @@ where
     let normalized = s.replace(":", "");
     BigUint::from_str_radix(&normalized, 16).map_err(serde::de::Error::custom)
 }
+
+#[derive(Debug, Deserialize)]
+pub struct CMSS {
+    cmss: Vec<CmsWrapper>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CmsWrapper {
+    pub cms: Cms,
+}
+#[derive(Debug, Deserialize, Clone)]
+pub struct Cms {
+    pub id: String,
+    pub signer: Option<Signer>,
+    pub recipient: String,
+    pub data_file: String,
+}
 /// Reads a certificate configuration YAML file and returns a flat list of certificates.
 ///
 /// # Arguments
@@ -283,6 +300,14 @@ pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::er
         Ok(data) => Ok(data),
         Err(e) => Err(e.into()),
     }
+}
+
+pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn std::error::Error>> {
+    let yaml_str = fs::read_to_string(config).expect("No config file found");
+
+    let cmss: CMSS = serde_yaml::from_str(&yaml_str)?;
+    let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
+    Ok(flat_cmss)
 }
 
 #[cfg(test)]
@@ -438,6 +463,38 @@ revoked:
                 cert_pem_file: "signer_cert.pem".to_string(),
                 private_key_pem_file: "signer_pkey.pem".to_string()
             }
+        )
+    }
+
+    #[test]
+    fn test_read_cms_config_valid_yaml() {
+        let yaml_content = r#"
+cmss:
+  - cms:
+      id: test1
+      signer:
+        cert_pem_file: "signer_cert.pem"
+        private_key_pem_file: "signer_pkey.pem"
+      recipient: client2encrypt_cert.pem
+      data_file: ./examples/message.txt
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let result = read_cms_config(temp_file.path());
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "test1".to_string());
+        assert_eq!(data[0].recipient, "client2encrypt_cert.pem".to_string());
+        assert_eq!(data[0].data_file, "./examples/message.txt".to_string());
+        assert_eq!(
+            data[0].signer,
+            Some(Signer {
+                cert_pem_file: "signer_cert.pem".to_string(),
+                private_key_pem_file: "signer_pkey.pem".to_string()
+            })
         )
     }
 }

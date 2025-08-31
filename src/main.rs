@@ -1,8 +1,9 @@
 #![allow(dead_code, unused_variables)]
-use crate::config::{read_certificate_config, read_crl_config, read_csr_config};
+use crate::config::{read_certificate_config, read_cms_config, read_crl_config, read_csr_config};
 use clap::{Parser, Subcommand};
 
 mod certificate;
+mod cms;
 mod config;
 mod crl;
 mod csr;
@@ -19,7 +20,7 @@ enum Commands {
     /// Create certificates
     CERT {
         /// The config file for defining the certificates to create
-        #[arg(short, long, default_value = "./examples/test_ed25519.yaml")]
+        #[arg(short, long, default_value = "./examples/test.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./certs")]
         output_dir: String,
@@ -37,6 +38,13 @@ enum Commands {
         #[arg(short, long, default_value = "./examples/test_crl.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./certs")]
+        output_dir: String,
+    },
+    /// Create Cryptographic Message
+    CMS {
+        #[arg(short, long, default_value = "./examples/test_cms.yaml")]
+        config_file: String,
+        #[arg(short, long, default_value = "./cms_data")]
         output_dir: String,
     },
 }
@@ -80,6 +88,16 @@ fn main() {
                 Err(e) => println!("Failed to handle CRL with error {}", e),
             },
             Err(e) => println!("Failed to read crl config file with error: {}", e),
+        },
+        Commands::CMS {
+            config_file,
+            output_dir,
+        } => match read_cms_config(config_file) {
+            Ok(data) => match cms::handle(data, output_dir) {
+                Ok(_) => println!("Created cms/pkcs7 data file"),
+                Err(e) => println!("Failed to handle CMD with error {}", e),
+            },
+            Err(e) => println!("Failed to read Cms config file with error: {}", e),
         },
     }
 }

@@ -90,13 +90,12 @@ fn handle_csr<C: AsRef<Path>>(csr: Csr, output_dir: C) -> Result<(), Box<dyn std
     builder = builder.organization(&csr.pkix.organization);
     builder = builder.common_name(&csr.pkix.commonname);
     builder = builder.key_type(CHKeyType::from_key_type(csr.keytype.clone(), csr.keylength));
-    if let Some(ref hashalg) = csr.hashalg {
-        builder = builder.signature_alg(CHHashAlg::from(hashalg.clone()));
-    } else {
-        if csr.keytype != KeyType::Ed25519 {
-            return Err("Missing hash Alg for creating CSR".into());
-        }
+    match (&csr.hashalg, csr.keytype) {
+        (Some(hashalg), _) => builder = builder.signature_alg(CHHashAlg::from(hashalg.clone())),
+        (None, KeyType::Ed25519) => {}
+        (None, _) => return Err("Missing hash Alg for creating CSR".into()),
     }
+
     if let Some(ref altnames) = csr.altnames {
         let altnames_refs: Vec<&str> = altnames.iter().map(String::as_str).collect();
         builder = builder.alternative_names(altnames_refs);
