@@ -663,9 +663,12 @@ mod tests {
             .common_name("My Test Ca")
             .is_ca(true)
             .key_usage(
-                [cert_helper::certificate::Usage::signature]
-                    .into_iter()
-                    .collect(),
+                [
+                    cert_helper::certificate::Usage::signature,
+                    cert_helper::certificate::Usage::encipherment,
+                ]
+                .into_iter()
+                .collect(),
             )
             .build_and_self_sign()
             .unwrap()
@@ -751,6 +754,439 @@ mod tests {
 
         // Return the config AND the temp files to keep them alive
         (cms_config, cert_file, data_file)
+    }
+    fn create_test_pkcs7_config_with_files(
+        detached: bool,
+    ) -> (
+        crate::config::Cms,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+        tempfile::NamedTempFile,
+    ) {
+        use std::io::Write;
+
+        // Create temporary files
+        let mut data_file =
+            tempfile::NamedTempFile::new().expect("Failed to create temp data file");
+        let mut cert_file =
+            tempfile::NamedTempFile::new().expect("Failed to create temp cert file");
+        let mut key_file = tempfile::NamedTempFile::new().expect("Failed to create temp key file");
+
+        // Write test data
+        let test_data = b"Test data for CMS operations";
+        data_file
+            .write_all(test_data)
+            .expect("Failed to write test data");
+        data_file.flush().expect("Failed to flush test data");
+
+        // Write certificate content
+        let cert_content = dummy_certificate().x509.to_pem().unwrap();
+        cert_file
+            .write_all(&cert_content)
+            .expect("Failed to write cert");
+        cert_file.flush().expect("Failed to flush cert");
+
+        // Write key content (simplified - should be private key)
+        let key_content = dummy_certificate()
+            .pkey
+            .as_ref()
+            .unwrap()
+            .private_key_to_pem_pkcs8()
+            .unwrap();
+        key_file
+            .write_all(&key_content)
+            .expect("Failed to write key");
+        key_file.flush().expect("Failed to flush key");
+
+        let config = crate::config::Cms {
+            id: "test1".to_string(),
+            signer: Some(crate::config::Signer {
+                cert_pem_file: cert_file.path().to_string_lossy().to_string(),
+                private_key_pem_file: key_file.path().to_string_lossy().to_string(),
+            }),
+            recipient: cert_file.path().to_string_lossy().to_string(),
+            data_file: data_file.path().to_string_lossy().to_string(),
+            detached: Some(detached),
+        };
+
+        (config, data_file, cert_file, key_file)
+    }
+    #[test]
+    fn test_cms_integration_with_detached_signature() {
+        let (config, _data_file, _cert_file, _key_file) = create_test_pkcs7_config_with_files(true);
+
+        // Create temporary output directory
+        let output_dir = tempfile::tempdir().expect("Failed to create temp output dir");
+
+        // This tests the full integration through the handle function
+        match handle(vec![config], output_dir.path()) {
+            Ok(_) => {
+                // Check that files were created
+                let p7s_path = output_dir.path().join("test1.p7s");
+                assert!(
+                    p7s_path.exists(),
+                    "Detached signature file should be created"
+                );
+
+                // Verify it's a detached signature by checking file size
+                let metadata = std::fs::metadata(&p7s_path).unwrap();
+                assert!(metadata.len() > 0, "Signature file should not be empty");
+                assert!(
+                    metadata.len() < 2048,
+                    "Detached signature should be relatively small"
+                );
+            }
+            Err(e) => panic!("CMS integration test with detached signature failed: {}", e),
+        }
+        // Temp files are automatically cleaned up when they go out of scope
+    }
+
+    #[test]
+    fn test_cms_integration_attached_vs_detached() {
+        let (attached_config, _data_file1, _cert_file1, _key_file1) =
+            create_test_pkcs7_config_with_files(false);
+        let (detached_config, _data_file2, _cert_file2, _key_file2) =
+            create_test_pkcs7_config_with_files(true);
+
+        let output_dir = tempfile::tempdir().expect("Failed to create temp output dir");
+
+        // Test attached signature
+        match handle(vec![attached_config], output_dir.path()) {
+            Ok(_) => {
+                let pkcs7_path = output_dir.path().join("test1.pkcs7");
+                assert!(
+                    pkcs7_path.exists(),
+                    "Attached signature file should be created"
+                );
+                let attached_size = std::fs::metadata(&pkcs7_path).unwrap().len();
+
+                // Test detached signature
+                match handle(vec![detached_config], output_dir.path()) {
+                    Ok(_) => {
+                        let p7s_path = output_dir.path().join("test1.p7s");
+                        assert!(
+                            p7s_path.exists(),
+                            "Detached signature file should be created"
+                        );
+                        let detached_size = std::fs::metadata(&p7s_path).unwrap().len();
+
+                        // Detached should be smaller (no embedded content)
+                        assert!(
+                            detached_size < attached_size,
+                            "Detached signature ({} bytes) should be smaller than attached ({} bytes)",
+                            detached_size,
+                            attached_size
+                        );
+                    }
+                    Err(e) => panic!("Failed to create detached signature: {}", e),
+                }
+            }
+            Err(e) => panic!("Failed to create attached signature: {}", e),
+        }
+    }
+    //
+    #[test]
+    fn test_create_pkcs7_detached_signature_basic() {
+        let data = b"Test data for detached signature";
+        let cert = dummy_p256_certificate();
+
+        // Test detached signature
+        let detached_result = create_pkcs7_signed_data(data, &cert, true);
+        assert!(
+            detached_result.is_ok(),
+            "Should create detached signature successfully"
+        );
+
+        let detached_data = detached_result.unwrap();
+        assert!(
+            !detached_data.is_empty(),
+            "Signature data should not be empty"
+        );
+
+        // Test attached signature for comparison
+        let attached_result = create_pkcs7_signed_data(data, &cert, false);
+        assert!(
+            attached_result.is_ok(),
+            "Should create attached signature successfully"
+        );
+
+        let attached_data = attached_result.unwrap();
+
+        // Detached should be smaller than attached (no embedded content)
+        assert!(
+            detached_data.len() < attached_data.len(),
+            "Detached signature should be smaller than attached"
+        );
+    }
+
+    // test
+    #[test]
+    fn test_create_pkcs7_detached_signature_with_p256() {
+        let data = b"Test data for detached signature";
+        let cert = dummy_p256_certificate();
+
+        match create_pkcs7_signed_data(data, &cert, true) {
+            Ok(signed_data) => {
+                // Basic validation
+                assert!(!signed_data.is_empty(), "Signature should not be empty");
+                assert!(
+                    signed_data.len() > 100,
+                    "Signature should be substantial size"
+                );
+                assert!(
+                    signed_data.len() < 2048,
+                    "Detached signature should be reasonably sized"
+                );
+
+                // Check it starts with correct ASN.1 SEQUENCE tag for CMS
+                assert_eq!(signed_data[0], 0x30, "Should start with SEQUENCE tag");
+
+                // For detached signatures, should be smaller than if we included the data
+                let attached_result = create_pkcs7_signed_data(data, &cert, false);
+                if let Ok(attached_data) = attached_result {
+                    assert!(
+                        signed_data.len() < attached_data.len(),
+                        "Detached signature should be smaller than attached"
+                    );
+                }
+            }
+            Err(e) => panic!("Failed to create detached signature: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_create_pkcs7_detached_signature_with_rsa() {
+        let data = b"RSA test data for detached signature";
+        let cert = dummy_rsa_certificate();
+
+        match create_pkcs7_signed_data(data, &cert, true) {
+            Ok(signed_data) => {
+                assert!(!signed_data.is_empty());
+                assert!(signed_data[0] == 0x30, "Should be valid ASN.1 structure");
+
+                // RSA signatures tend to be larger than ECDSA
+                assert!(
+                    signed_data.len() > 200,
+                    "RSA signature should be substantial"
+                );
+            }
+            Err(e) => panic!("Failed to create RSA detached signature: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_detached_vs_attached_signature_size() {
+        let data = b"Compare attached vs detached signatures";
+        let cert = dummy_p256_certificate();
+
+        // Create both types
+        let attached = create_pkcs7_signed_data(data, &cert, false).unwrap();
+        let detached = create_pkcs7_signed_data(data, &cert, true).unwrap();
+
+        // Detached should be smaller (no embedded content)
+        assert!(
+            detached.len() < attached.len(),
+            "Detached ({} bytes) should be smaller than attached ({} bytes)",
+            detached.len(),
+            attached.len()
+        );
+
+        // Both should be valid ASN.1 structures
+        assert_eq!(attached[0], 0x30, "Attached should start with SEQUENCE");
+        assert_eq!(detached[0], 0x30, "Detached should start with SEQUENCE");
+    }
+
+    #[test]
+    fn test_detached_signature_with_different_data_sizes() {
+        let cert = dummy_p256_certificate();
+
+        // Test with small data
+        let small_data = b"small";
+        let small_sig = create_pkcs7_signed_data(small_data, &cert, true).unwrap();
+
+        // Test with large data (10KB)
+        let large_data: Vec<u8> = (0..10240).map(|i| (i % 256) as u8).collect();
+        let large_sig = create_pkcs7_signed_data(&large_data, &cert, true).unwrap();
+
+        // For detached signatures, size should be similar regardless of data size
+        let size_diff = (large_sig.len() as i32 - small_sig.len() as i32).abs();
+        assert!(
+            size_diff < 100,
+            "Detached signature sizes should be similar: small={}, large={}",
+            small_sig.len(),
+            large_sig.len()
+        );
+
+        // Both should be much smaller than the large data
+        assert!(
+            large_sig.len() < large_data.len() / 4,
+            "Signature should be much smaller than data"
+        );
+    }
+
+    #[test]
+    fn test_detached_signature_with_empty_data() {
+        let empty_data = b"";
+        let cert = dummy_p256_certificate();
+
+        match create_pkcs7_signed_data(empty_data, &cert, true) {
+            Ok(signed_data) => {
+                assert!(
+                    !signed_data.is_empty(),
+                    "Should create signature even for empty data"
+                );
+                assert_eq!(signed_data[0], 0x30, "Should be valid ASN.1 structure");
+            }
+            Err(e) => panic!("Failed to create detached signature with empty data: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_detached_signature_deterministic_structure() {
+        let data = b"Test deterministic behavior";
+        let cert = dummy_p256_certificate();
+
+        // Create two signatures of the same data
+        let sig1 = create_pkcs7_signed_data(data, &cert, true).unwrap();
+        let sig2 = create_pkcs7_signed_data(data, &cert, true).unwrap();
+
+        // Sizes may differ slightly due to timestamps and ECDSA randomness
+        let size_diff = (sig1.len() as i32 - sig2.len() as i32).abs();
+        assert!(
+            size_diff <= 5,
+            "Signature sizes should be very similar: {} vs {} (diff: {})",
+            sig1.len(),
+            sig2.len(),
+            size_diff
+        );
+
+        // Both should have the same ASN.1 structure start
+        assert_eq!(sig1[0], sig2[0], "Should have same ASN.1 structure");
+        // Don't check length byte as it might differ slightly due to size variations
+
+        // Both should be reasonable signature sizes
+        assert!(
+            sig1.len() > 500 && sig1.len() < 1500,
+            "Signature 1 should be reasonable size"
+        );
+        assert!(
+            sig2.len() > 500 && sig2.len() < 1500,
+            "Signature 2 should be reasonable size"
+        );
+    }
+
+    #[test]
+    fn test_detached_signature_with_real_file_content() {
+        use std::io::Write;
+
+        // Create a temporary file with larger content (signatures are typically 800+ bytes)
+        let mut temp_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        let test_content = b"This is test content for detached signature verification. \
+                             We need enough content to make the file larger than the signature. \
+                             Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod \
+                             tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim \
+                             veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea \
+                             commodo consequat. Duis aute irure dolor in reprehenderit in voluptate \
+                             velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint \
+                             occaecat cupidatat non proident, sunt in culpa qui officia deserunt \
+                             mollit anim id est laborum. Sed ut perspiciatis unde omnis iste natus \
+                             error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, \
+                             eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae \
+                             vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit \
+                             aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos \
+                             qui ratione voluptatem sequi nesciunt.";
+
+        temp_file
+            .write_all(test_content)
+            .expect("Failed to write test content");
+        temp_file.flush().expect("Failed to flush");
+
+        // Create certificate for signing
+        let cert = dummy_p256_certificate();
+
+        // Read the file content (as the actual implementation would)
+        let file_content = std::fs::read(temp_file.path()).expect("Failed to read temp file");
+
+        match create_pkcs7_signed_data(&file_content, &cert, true) {
+            Ok(signed_data) => {
+                // Verify basic properties
+                assert!(!signed_data.is_empty());
+                assert_eq!(signed_data[0], 0x30, "Should be valid CMS structure");
+
+                println!("File content size: {} bytes", file_content.len());
+                println!("Signature size: {} bytes", signed_data.len());
+
+                // Now the signature should be smaller than the larger content
+                assert!(
+                    signed_data.len() < file_content.len(),
+                    "Detached signature ({} bytes) should be smaller than original content ({} bytes)",
+                    signed_data.len(),
+                    file_content.len()
+                );
+
+                // Signature should still be substantial
+                assert!(
+                    signed_data.len() > 500,
+                    "Signature should be substantial size"
+                );
+            }
+            Err(e) => panic!("Failed to create detached signature: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_detached_signature_size_independence() {
+        let cert = dummy_p256_certificate();
+
+        // Small content
+        let small_content = b"small";
+        let small_sig = create_pkcs7_signed_data(small_content, &cert, true).unwrap();
+
+        // Large content (5KB)
+        let large_content = vec![b'A'; 5120];
+        let large_sig = create_pkcs7_signed_data(&large_content, &cert, true).unwrap();
+
+        // Very large content (50KB)
+        let very_large_content = vec![b'B'; 51200];
+        let very_large_sig = create_pkcs7_signed_data(&very_large_content, &cert, true).unwrap();
+
+        println!(
+            "Small content: {} bytes, signature: {} bytes",
+            small_content.len(),
+            small_sig.len()
+        );
+        println!(
+            "Large content: {} bytes, signature: {} bytes",
+            large_content.len(),
+            large_sig.len()
+        );
+        println!(
+            "Very large content: {} bytes, signature: {} bytes",
+            very_large_content.len(),
+            very_large_sig.len()
+        );
+
+        // Store the sizes in a variable first
+        let sizes = [small_sig.len(), large_sig.len(), very_large_sig.len()];
+        let max_size = sizes.iter().max().unwrap();
+        let min_size = sizes.iter().min().unwrap();
+        let size_variance = max_size - min_size;
+
+        assert!(
+            size_variance <= 10,
+            "Detached signature sizes should be very similar regardless of content size. Variance: {} bytes",
+            size_variance
+        );
+
+        // All signatures should be much smaller than large content
+        assert!(
+            large_sig.len() < large_content.len() / 4,
+            "Signature should be much smaller than large content"
+        );
+        assert!(
+            very_large_sig.len() < very_large_content.len() / 10,
+            "Signature should be much smaller than very large content"
+        );
     }
 
     #[test]
