@@ -1190,6 +1190,166 @@ mod tests {
     }
 
     #[test]
+    fn test_detached_signature_has_required_attributes_fixed() {
+        let data = b"Test required attributes";
+        let cert = dummy_p256_certificate();
+
+        match create_pkcs7_signed_data(data, &cert, true) {
+            Ok(signed_data) => {
+                // Parse as ContentInfo first
+                let content_info = cms::content_info::ContentInfo::from_der(&signed_data).unwrap();
+                let inner_content = content_info.content.value();
+
+                // The inner content needs to be wrapped in a SEQUENCE to be valid SignedData
+                // reate the proper SEQUENCE wrapper
+                let mut signed_data_with_wrapper = Vec::new();
+                signed_data_with_wrapper.push(0x30); // SEQUENCE tag
+
+                // Calculate and encode the length, for data that is longer than 127 bytes
+                // the length starts with 0x80 and you or in the number of bytes used for length
+                // i.e 0x81 for 1 byte, 0x82 for 2 bytes etc.So 0x81 means that one byte after this tells
+                // the length of the content. See my der-test github repo for examples
+                if inner_content.len() < 128 {
+                    signed_data_with_wrapper.push(inner_content.len() as u8);
+                } else if inner_content.len() < 256 {
+                    signed_data_with_wrapper.push(0x81); // Long form, 1 byte length
+                    signed_data_with_wrapper.push(inner_content.len() as u8);
+                } else {
+                    signed_data_with_wrapper.push(0x82); // Long form, 2 byte length
+                    signed_data_with_wrapper.push((inner_content.len() >> 8) as u8);
+                    signed_data_with_wrapper.push((inner_content.len() & 0xFF) as u8);
+                }
+
+                signed_data_with_wrapper.extend_from_slice(inner_content);
+
+                match cms::signed_data::SignedData::from_der(&signed_data_with_wrapper) {
+                    Ok(signed) => {
+                        println!("✓ SignedData parsed successfully with wrapper!");
+
+                        let signer = &signed.signer_infos.0;
+                        let signed_attrs = signer.get(0).unwrap().signed_attrs.as_ref().unwrap();
+
+                        // Check for required attributes
+                        let required_oids = vec![
+                            "1.2.840.113549.1.9.3", // contentType
+                            "1.2.840.113549.1.9.5", // signingTime
+                            "1.2.840.113549.1.9.4", // messageDigest
+                        ];
+
+                        for oid in required_oids {
+                            let has_attr =
+                                signed_attrs.iter().any(|attr| attr.oid.to_string() == oid);
+                            assert!(has_attr, "Missing required attribute: {}", oid);
+                        }
+                    }
+                    Err(e) => {
+                        panic!("Failed to create detached signature: {}", e)
+                    }
+                }
+            }
+            Err(e) => panic!("Failed to create detached signature: {}", e),
+        }
+    }
+
+    // used for debugging ASN.1 structure issues
+    #[test]
+    fn debug_asn1_structure() {
+        let data = b"Debug ASN.1 structure";
+        let cert = dummy_p256_certificate();
+
+        match create_pkcs7_signed_data(data, &cert, true) {
+            Ok(signed_data) => {
+                println!("=== ASN.1 Structure Debug ===");
+                println!("Total size: {} bytes", signed_data.len());
+
+                // Print first 32 bytes in hex
+                let hex_preview = hex::encode(&signed_data[..32.min(signed_data.len())]);
+                println!("First 32 bytes: {}", hex_preview);
+
+                // Try to parse as ContentInfo first
+                println!("\n1. Trying to parse as ContentInfo...");
+                match cms::content_info::ContentInfo::from_der(&signed_data) {
+                    Ok(content_info) => {
+                        println!("✓ ContentInfo parsed successfully");
+                        println!("ContentInfo OID: {}", content_info.content_type);
+
+                        // Get the inner content
+                        let inner_content = content_info.content.value();
+                        println!("Inner content size: {} bytes", inner_content.len());
+
+                        let inner_hex = hex::encode(&inner_content[..32.min(inner_content.len())]);
+                        println!("Inner content first 32 bytes: {}", inner_hex);
+
+                        // Try to parse the inner content as SignedData
+                        println!("\n2. Trying to parse inner content as SignedData...");
+                        match cms::signed_data::SignedData::from_der(inner_content) {
+                            Ok(signed) => {
+                                println!("✓ SignedData parsed successfully!");
+                                println!("Number of signers: {}", signed.signer_infos.0.len());
+                            }
+                            Err(e) => {
+                                println!("✗ SignedData parsing failed: {:?}", e);
+
+                                // Let's examine what's at the position where it failed
+                                if inner_content.len() >= 10 {
+                                    println!("Bytes at error position:");
+                                    for i in 0..10.min(inner_content.len()) {
+                                        println!(
+                                            "  [{}] = 0x{:02x} ({})",
+                                            i,
+                                            inner_content[i],
+                                            if inner_content[i].is_ascii_graphic() {
+                                                inner_content[i] as char
+                                            } else {
+                                                '.'
+                                            }
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("✗ ContentInfo parsing failed: {:?}", e);
+
+                        // Try parsing directly as SignedData (maybe no ContentInfo wrapper?)
+                        println!("\n3. Trying to parse directly as SignedData...");
+                        match cms::signed_data::SignedData::from_der(&signed_data) {
+                            Ok(signed) => {
+                                println!("✓ Direct SignedData parsing worked!");
+                                println!("Number of signers: {}", signed.signer_infos.0.len());
+                            }
+                            Err(e2) => {
+                                println!("✗ Direct SignedData parsing also failed: {:?}", e2);
+
+                                // Show the exact bytes at the positions mentioned in the error
+                                println!("\nRaw bytes analysis:");
+                                for i in 0..20.min(signed_data.len()) {
+                                    println!(
+                                        "  [{}] = 0x{:02x} (tag: {})",
+                                        i,
+                                        signed_data[i],
+                                        match signed_data[i] {
+                                            0x30 => "SEQUENCE",
+                                            0x02 => "INTEGER",
+                                            0x04 => "OCTET STRING",
+                                            0x06 => "OBJECT IDENTIFIER",
+                                            0x31 => "SET",
+                                            0xa0 => "CONTEXT [0]",
+                                            _ => "OTHER",
+                                        }
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => panic!("Failed to create signature: {}", e),
+        }
+    }
+
+    #[test]
     fn test_create_cms_with_rsa_certificate() {
         let rsa_cert = dummy_rsa_certificate();
         let test_data = "Hello, RSA CMS world!";
