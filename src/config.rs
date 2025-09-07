@@ -223,6 +223,7 @@ pub struct Cms {
     pub signer: Option<Signer>,
     pub recipient: String,
     pub data_file: String,
+    pub detached: Option<bool>,
 }
 /// Reads a certificate configuration YAML file and returns a flat list of certificates.
 ///

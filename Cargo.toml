@@ -24,3 +24,4 @@ x509-cert = "0.2.5"
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 p384 = { version = "0.13", features = ["ecdsa", "pem"] }
 ecdsa = { version = "0.16", features = ["signing", "digest"] }
+hex = "0.4.3"
