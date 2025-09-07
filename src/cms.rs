@@ -248,18 +248,6 @@ impl DetectedKey {
             oid: RFC8894_ID_SENDER_NONCE,
             values: sender_nonce_value,
         };
-        const RFC8894_ID_MESSAGE_TYPE: ObjectIdentifier =
-            ObjectIdentifier::new_unwrap("2.16.840.1.113733.1.9.2");
-        const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
-
-        let mut message_type_value: SetOfVec<AttributeValue> = Default::default();
-        let message_type_oid = Any::new(Tag::ObjectIdentifier, DATA_OID.as_bytes())?;
-        message_type_value.insert(message_type_oid)?;
-
-        let message_type = Attribute {
-            oid: RFC8894_ID_MESSAGE_TYPE,
-            values: message_type_value,
-        };
 
         match self {
             DetectedKey::Rsa(signing_key) => {
@@ -272,9 +260,6 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
-                    .unwrap();
-                signer_info_builder
-                    .add_signed_attribute(message_type)
                     .unwrap();
                 if let Some(original_data) = data {
                     signer_info_builder
@@ -314,9 +299,6 @@ impl DetectedKey {
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
                     .unwrap();
-                signer_info_builder
-                    .add_signed_attribute(message_type)
-                    .unwrap();
                 if let Some(original_data) = data {
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
@@ -353,9 +335,6 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
-                    .unwrap();
-                signer_info_builder
-                    .add_signed_attribute(message_type)
                     .unwrap();
                 if let Some(original_data) = data {
                     signer_info_builder
@@ -1231,9 +1210,10 @@ mod tests {
 
                         // Check for required attributes
                         let required_oids = vec![
-                            "1.2.840.113549.1.9.3", // contentType
-                            "1.2.840.113549.1.9.5", // signingTime
-                            "1.2.840.113549.1.9.4", // messageDigest
+                            "1.2.840.113549.1.9.3",    // contentType
+                            "1.2.840.113549.1.9.5",    // signingTime
+                            "1.2.840.113549.1.9.4",    // messageDigest
+                            "2.16.840.1.113733.1.9.5", // senderNonce
                         ];
 
                         for oid in required_oids {
