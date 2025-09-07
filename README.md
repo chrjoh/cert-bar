@@ -283,6 +283,7 @@ Each entry contains:
 # Cryptographic Message Syntax (CMS)
 
 This YAML configuration file defines the structure for generating CMS (Cryptographic Message Syntax) messages, which provide encrypted and optionally signed data containers.
+[openssl commands to verify CMS](./openssl.md)
 
 ## Structure
 
