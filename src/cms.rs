@@ -18,10 +18,10 @@ use p256::{NistP256, SecretKey as P256SecretKey};
 use p384::{NistP384, SecretKey as P384SecretKey};
 use rand::{RngCore, thread_rng};
 use rsa::pkcs1::der::DecodePem;
-use rsa::pkcs1v15::SigningKey;
+use rsa::pkcs1v15;
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use spki::AlgorithmIdentifierOwned;
 use std::fs;
 use std::io;
@@ -90,9 +90,11 @@ pub fn handle<C: AsRef<Path>>(
                         &signer.cert_pem_file,
                         &signer.private_key_pem_file,
                     )?;
-                    match create_pkcs7_signed_data(&res, &signer_cert) {
+                    let detached = cms.detached.unwrap_or(false);
+                    match create_pkcs7_signed_data(&res, &signer_cert, detached) {
                         Ok(pkcs7_der) => {
-                            save_file_with_extension(&output_dir, &cms.id, "pkcs7", &pkcs7_der)
+                            let extension = if detached { "p7s" } else { "pkcs7" };
+                            save_file_with_extension(&output_dir, &cms.id, extension, &pkcs7_der)
                                 .expect("failed to save cms file");
                         }
                         Err(e) => {
@@ -195,7 +197,7 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
 
 #[derive(Debug)]
 enum DetectedKey {
-    Rsa(SigningKey<Sha256>),
+    Rsa(pkcs1v15::SigningKey<Sha256>),
     P256(EcdsaSigningKey<NistP256>),
     P384(EcdsaSigningKey<NistP384>),
 }
@@ -204,7 +206,7 @@ impl DetectedKey {
     fn from_pem(pem_string: &str) -> Result<Self, cms::builder::Error> {
         // Try RSA first
         if let Ok(rsa_private_key) = RsaPrivateKey::from_pkcs8_pem(pem_string) {
-            let signing_key = SigningKey::<Sha256>::new(rsa_private_key);
+            let signing_key = pkcs1v15::SigningKey::<Sha256>::new(rsa_private_key);
             return Ok(DetectedKey::Rsa(signing_key));
         }
 
@@ -230,6 +232,7 @@ impl DetectedKey {
         signer_identifier: SignerIdentifier,
         digest_algorithm: AlgorithmIdentifierOwned,
         x509_cert: X509Certificate,
+        data: Option<&[u8]>,
     ) -> Result<Vec<u8>, cms::builder::Error> {
         const RFC8894_ID_SENDER_NONCE: ObjectIdentifier =
             ObjectIdentifier::new_unwrap("2.16.840.1.113733.1.9.5");
@@ -273,11 +276,24 @@ impl DetectedKey {
                 signer_info_builder
                     .add_signed_attribute(message_type)
                     .unwrap();
+                if let Some(original_data) = data {
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
+                        .unwrap();
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
+                        .unwrap();
+                    let message_digest_attr =
+                        DetectedKey::detached_hash_calculated_attribute(original_data)?;
+                    signer_info_builder
+                        .add_signed_attribute(message_digest_attr)
+                        .unwrap();
+                }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
                     .add_certificate(cms::cert::CertificateChoices::Certificate(x509_cert))?
-                    .add_signer_info::<SigningKey<Sha256>, rsa::pkcs1v15::Signature>(
+                    .add_signer_info::<pkcs1v15::SigningKey<Sha256>, rsa::pkcs1v15::Signature>(
                         signer_info_builder,
                     )?
                     .build()?;
@@ -301,6 +317,19 @@ impl DetectedKey {
                 signer_info_builder
                     .add_signed_attribute(message_type)
                     .unwrap();
+                if let Some(original_data) = data {
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
+                        .unwrap();
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
+                        .unwrap();
+                    let message_digest_attr =
+                        DetectedKey::detached_hash_calculated_attribute(original_data)?;
+                    signer_info_builder
+                        .add_signed_attribute(message_digest_attr)
+                        .unwrap();
+                }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
@@ -328,6 +357,19 @@ impl DetectedKey {
                 signer_info_builder
                     .add_signed_attribute(message_type)
                     .unwrap();
+                if let Some(original_data) = data {
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
+                        .unwrap();
+                    signer_info_builder
+                        .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
+                        .unwrap();
+                    let message_digest_attr =
+                        DetectedKey::detached_hash_calculated_attribute(original_data)?;
+                    signer_info_builder
+                        .add_signed_attribute(message_digest_attr)
+                        .unwrap();
+                }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
                     .add_digest_algorithm(digest_algorithm)?
@@ -343,15 +385,68 @@ impl DetectedKey {
             }
         }
     }
+    fn add_signing_time_attribute() -> Result<Attribute, cms::builder::Error> {
+        const SIGNING_TIME_OID: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.5");
+
+        let time_string = format!("{}Z", chrono::Utc::now().format("%y%m%d%H%M%S"));
+        let time_bytes = time_string.as_bytes();
+
+        let mut signing_time_value: SetOfVec<AttributeValue> = Default::default();
+        let time_any = Any::new(Tag::UtcTime, time_bytes)
+            .map_err(|e| cms::builder::Error::Builder(format!("Time Any creation error: {}", e)))?;
+        signing_time_value
+            .insert(time_any)
+            .map_err(|e| cms::builder::Error::Builder(format!("Time insertion error: {}", e)))?;
+        Ok(Attribute {
+            oid: SIGNING_TIME_OID,
+            values: signing_time_value,
+        })
+    }
+    fn add_content_type_attribute() -> Result<Attribute, cms::builder::Error> {
+        const CONTENT_TYPE_OID: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.3");
+        const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
+
+        let mut content_type_value: SetOfVec<AttributeValue> = Default::default();
+        let content_type_oid =
+            Any::new(Tag::ObjectIdentifier, DATA_OID.as_bytes()).map_err(|e| {
+                cms::builder::Error::Builder(format!("Failed to create content type OID: {}", e))
+            })?;
+        content_type_value.insert(content_type_oid).map_err(|e| {
+            cms::builder::Error::Builder(format!("Failed to insert content type: {}", e))
+        })?;
+
+        let content_type_attr = Attribute {
+            oid: CONTENT_TYPE_OID,
+            values: content_type_value,
+        };
+        Ok(content_type_attr)
+    }
+    fn detached_hash_calculated_attribute(data: &[u8]) -> Result<Attribute, cms::builder::Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let digest = hasher.finalize();
+        let message_digest_attr = cms::builder::create_message_digest_attribute(&digest)?;
+        Ok(message_digest_attr)
+    }
 }
 fn create_pkcs7_signed_data(
     data: &[u8],
     signer: &CHCertificate,
+    detached: bool,
 ) -> Result<Vec<u8>, cms::builder::Error> {
     const DATA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
-    let encapsulated_content = EncapsulatedContentInfo {
-        econtent_type: DATA_OID,
-        econtent: Some(Any::new(Tag::OctetString, data)?),
+    let encapsulated_content = if detached {
+        EncapsulatedContentInfo {
+            econtent_type: DATA_OID,
+            econtent: None, // No content for detached signature
+        }
+    } else {
+        EncapsulatedContentInfo {
+            econtent_type: DATA_OID,
+            econtent: Some(Any::new(Tag::OctetString, data)?),
+        }
     };
 
     let private_key = signer
@@ -400,13 +495,14 @@ fn create_pkcs7_signed_data(
     let x509_cert = X509Certificate::from_pem(&openssl_pem).map_err(|e| {
         cms::builder::Error::Builder(format!("Failed to parse x509 certificate: {}", e))
     })?;
+    let original_data = if detached { Some(data) } else { None };
 
-    // Create signed data using the detected key
     detected_key.create_signed_data(
         &encapsulated_content,
         signer_identifier,
         digest_algorithm,
         x509_cert,
+        original_data,
     )
 }
 
@@ -650,6 +746,7 @@ mod tests {
             recipient: cert_file.path().to_string_lossy().to_string(),
             data_file: data_file.path().to_string_lossy().to_string(),
             signer: None,
+            detached: None,
         };
 
         // Return the config AND the temp files to keep them alive
@@ -729,6 +826,7 @@ mod tests {
             recipient: "nonexistent_cert.pem".to_string(),
             data_file: "nonexistent_data.txt".to_string(),
             signer: None,
+            detached: None,
         };
 
         let result = create_cms(&cms_config);
@@ -744,7 +842,7 @@ mod tests {
         let rsa_cert = dummy_rsa_certificate();
         let test_data = b"Hello, RSA PKCS7 world!";
 
-        let result = create_pkcs7_signed_data(test_data, &rsa_cert);
+        let result = create_pkcs7_signed_data(test_data, &rsa_cert, false);
 
         assert!(
             result.is_ok(),
@@ -762,7 +860,7 @@ mod tests {
         let rsa_cert = dummy_rsa_no_sig_key_certificate();
         let test_data = b"Hello, RSA PKCS7 world!";
 
-        let result = create_pkcs7_signed_data(test_data, &rsa_cert);
+        let result = create_pkcs7_signed_data(test_data, &rsa_cert, false);
 
         assert!(
             result.is_err(),
@@ -775,7 +873,7 @@ mod tests {
         let p256_cert = dummy_p256_certificate();
         let test_data = b"Hello, P256 PKCS7 world!";
 
-        let result = create_pkcs7_signed_data(test_data, &p256_cert);
+        let result = create_pkcs7_signed_data(test_data, &p256_cert, false);
 
         assert!(
             result.is_ok(),
@@ -794,7 +892,7 @@ mod tests {
         let p384_cert = dummy_p384_certificate();
         let test_data = b"Hello, P384 PKCS7 world!";
 
-        let result = create_pkcs7_signed_data(test_data, &p384_cert);
+        let result = create_pkcs7_signed_data(test_data, &p384_cert, false);
 
         assert!(
             result.is_ok(),
@@ -813,7 +911,7 @@ mod tests {
         let rsa_cert = dummy_rsa_certificate();
         let test_data = b"";
 
-        let result = create_pkcs7_signed_data(test_data, &rsa_cert);
+        let result = create_pkcs7_signed_data(test_data, &rsa_cert, false);
 
         assert!(result.is_ok(), "Should be able to sign empty data");
         let pkcs7_der = result.unwrap();
@@ -828,7 +926,7 @@ mod tests {
         let rsa_cert = dummy_rsa_certificate();
         let large_data = vec![0x42u8; 10000]; // 10KB of data
 
-        let result = create_pkcs7_signed_data(&large_data, &rsa_cert);
+        let result = create_pkcs7_signed_data(&large_data, &rsa_cert, false);
 
         assert!(result.is_ok(), "Should be able to sign large data");
         let pkcs7_der = result.unwrap();
@@ -928,7 +1026,7 @@ mod tests {
         let cms_der = cms_result.unwrap();
 
         // Sign the CMS data
-        let pkcs7_result = create_pkcs7_signed_data(&cms_der, &rsa_cert);
+        let pkcs7_result = create_pkcs7_signed_data(&cms_der, &rsa_cert, false);
         assert!(pkcs7_result.is_ok(), "PKCS7 signing should succeed");
         let pkcs7_der = pkcs7_result.unwrap();
 
