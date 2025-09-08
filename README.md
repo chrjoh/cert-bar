@@ -349,6 +349,11 @@ Each CMS entry contains:
 - Type: String
 - Description: Path to the file containing the data to be encrypted in the CMS message.
 
+### detached (Optional)
+
+- Type: Boolean
+- Description: If set to true, the CMS message will be created in detached mode, meaning the actual data will not be included in the CMS structure. Default is false.
+
 ## Generated Output
 
 The CMS generation process creates the following files:

@@ -53,6 +53,7 @@ use x509_cert::time::Time;
 /// For each CMS configuration with ID "example":
 /// * `{output_dir}/{id}.cms` - Encrypted CMS message in DER format
 /// * `{output_dir}/{id}.pkcs7` - Signed CMS message in PKCS#7 format (only if signer is provided)
+/// alternative extension `.p7s` is used if the signature is detached
 ///
 /// # Behavior
 ///
