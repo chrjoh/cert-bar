@@ -955,6 +955,64 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_pkcs7_detached_signature_with_rsa() {
+        let data = b"RSA test data for detached signature";
+        let cert = dummy_rsa_certificate();
+
+        match create_pkcs7_signed_data(data, &cert, true) {
+            Ok(signed_data) => {
+                assert!(!signed_data.is_empty());
+                assert!(signed_data[0] == 0x30, "Should be valid ASN.1 structure");
+
+                // RSA signatures tend to be larger than ECDSA
+                assert!(
+                    signed_data.len() > 200,
+                    "RSA signature should be substantial"
+                );
+
+                let ci = ContentInfo::from_der(signed_data.as_slice()).unwrap();
+                const ID_SIGNED_DATA: ObjectIdentifier =
+                    ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
+                assert_eq!(ci.content_type, ID_SIGNED_DATA);
+
+                // Decode CMS message (by converting `Any` to `SignedData`)
+                let signed_data_der = ci.content.to_der().unwrap();
+                let signed_data =
+                    cms::signed_data::SignedData::from_der(signed_data_der.as_slice()).unwrap();
+
+                for signer_info in signed_data.signer_infos.0.iter() {
+                    let signature =
+                        rsa::pkcs1v15::Signature::try_from(signer_info.signature.as_bytes())
+                            .unwrap();
+                    let signed_attributes_der =
+                        signer_info.signed_attrs.clone().unwrap().to_der().unwrap();
+                    let verifier_rsa_key_pem_bytes = cert
+                        .pkey
+                        .as_ref()
+                        .unwrap()
+                        .private_key_to_pem_pkcs8()
+                        .unwrap();
+                    let verifier = {
+                        let verifier_rsa_key_pem =
+                            String::from_utf8(verifier_rsa_key_pem_bytes).unwrap();
+                        let verifier_rsa_key =
+                            RsaPrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
+                        rsa::pkcs1v15::VerifyingKey::<Sha256>::new(RsaPublicKey::from(
+                            verifier_rsa_key,
+                        ))
+                    };
+                    assert!(
+                        verifier
+                            .verify(signed_attributes_der.as_slice(), &signature)
+                            .is_ok()
+                    );
+                }
+            }
+            Err(e) => panic!("Failed to create RSA detached signature: {}", e),
+        }
+    }
+
+    #[test]
     fn test_detached_vs_attached_signature_size() {
         let data = b"Compare attached vs detached signatures";
         let cert = dummy_p256_certificate();
