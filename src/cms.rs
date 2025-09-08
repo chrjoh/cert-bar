@@ -634,6 +634,7 @@ mod tests {
     use super::*;
     use crate::config::Cms;
     use cert_helper::certificate::{CertBuilder, UseesBuilderFields};
+    use rsa::signature::Verifier;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1431,6 +1432,54 @@ mod tests {
         // Basic validation - should start with SEQUENCE tag (0x30)
         assert_eq!(pkcs7_der[0], 0x30, "PKCS7 should start with SEQUENCE tag");
     }
+
+    #[test]
+    fn test_verify_pkcs7_signed_data_with_rsa() {
+        let rsa_cert = dummy_rsa_certificate();
+        let test_data = b"Hello, RSA PKCS7 world!";
+
+        let result = create_pkcs7_signed_data(test_data, &rsa_cert, false);
+
+        assert!(
+            result.is_ok(),
+            "Failed to create PKCS7 with RSA certificate: {:?}",
+            result.err()
+        );
+        let signed_data_pkcs7_der = result.unwrap();
+        let ci = ContentInfo::from_der(signed_data_pkcs7_der.as_slice()).unwrap();
+        const ID_SIGNED_DATA: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
+        assert_eq!(ci.content_type, ID_SIGNED_DATA);
+
+        // Decode CMS message (by converting `Any` to `SignedData`)
+        let signed_data_der = ci.content.to_der().unwrap();
+        let signed_data =
+            cms::signed_data::SignedData::from_der(signed_data_der.as_slice()).unwrap();
+
+        for signer_info in signed_data.signer_infos.0.iter() {
+            let signature =
+                rsa::pkcs1v15::Signature::try_from(signer_info.signature.as_bytes()).unwrap();
+            let signed_attributes_der = signer_info.signed_attrs.clone().unwrap().to_der().unwrap();
+            let verifier_rsa_key_pem_bytes = rsa_cert
+                .pkey
+                .as_ref()
+                .unwrap()
+                .private_key_to_pem_pkcs8()
+                .unwrap();
+            let verifier = {
+                let verifier_rsa_key_pem = String::from_utf8(verifier_rsa_key_pem_bytes).unwrap();
+                let verifier_rsa_key =
+                    RsaPrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
+                rsa::pkcs1v15::VerifyingKey::<Sha256>::new(RsaPublicKey::from(verifier_rsa_key))
+            };
+            assert!(
+                verifier
+                    .verify(signed_attributes_der.as_slice(), &signature)
+                    .is_ok()
+            );
+        }
+    }
+
     #[test]
     fn test_create_pkcs7_signed_with_invalid_cert_data_with_rsa() {
         let rsa_cert = dummy_rsa_no_sig_key_certificate();
