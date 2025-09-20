@@ -76,47 +76,90 @@ use x509_cert::time::Time;
 /// Failed to create pkcs7 signed data: Invalid key format
 /// ```
 ///
-/// Only signer certificate loading errors cause early termination.
 pub fn handle<C: AsRef<Path>>(
     cms_data: Vec<Cms>,
     output_dir: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for cms in &cms_data {
-        match create_cms(&cms) {
-            Ok(res) => {
-                save_file_with_extension(&output_dir, &cms.id, "cms", &res)
-                    .expect("failed to save");
-                if let Some(signer) = &cms.signer {
-                    let signer_cert = CHCertificate::load_cert_and_key(
-                        &signer.cert_pem_file,
-                        &signer.private_key_pem_file,
-                    )?;
-                    let detached = cms.detached.unwrap_or(false);
-                    match create_pkcs7_signed_data(&res, &signer_cert, detached) {
-                        Ok(pkcs7_der) => {
-                            let extension = if detached { "p7s" } else { "pkcs7" };
-                            save_file_with_extension(&output_dir, &cms.id, extension, &pkcs7_der)
-                                .expect("failed to save cms file");
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to create pkcs7 signed data: {}", e);
-                            continue;
-                        }
-                    }
+        let data_result = if cms.recipient.is_some() {
+            create_cms(&cms)
+        } else {
+            data_to_sign(&cms)
+        };
+
+        if let Ok(data) = data_result {
+            if cms.recipient.is_some() {
+                if let Err(e) = save_file_with_extension(&output_dir, &cms.id, "cms", &data) {
+                    eprintln!("Failed to save CMS file: {}", e);
+                    continue;
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to create cms: {}", e);
-                continue;
+            if let Err(e) = sign_and_save(&cms, &data, &output_dir) {
+                eprintln!("Failed to sign data: {}", e);
             }
+        } else {
+            let error_msg = if cms.recipient.is_some() {
+                "Failed to create CMS"
+            } else {
+                "Failed to prepare clear text data"
+            };
+            eprintln!("{}: {}", error_msg, data_result.unwrap_err());
         }
     }
     Ok(())
 }
 
+fn sign_and_save<C: AsRef<Path>>(
+    cms: &Cms,
+    res: &[u8],
+    output_dir: C,
+) -> Result<(), cms::builder::Error> {
+    if let Some(signer) = &cms.signer {
+        let signer_cert =
+            CHCertificate::load_cert_and_key(&signer.cert_pem_file, &signer.private_key_pem_file)
+                .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
+        let detached = cms.detached.unwrap_or(false);
+        match create_pkcs7_signed_data(&res, &signer_cert, detached) {
+            Ok(pkcs7_der) => {
+                let extension = if detached { "p7s" } else { "pkcs7" };
+                save_file_with_extension(&output_dir, &cms.id, extension, &pkcs7_der)
+                    .expect("failed to save cms file");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("Failed to create pkcs7 signed data: {}", e);
+                Err(cms::builder::Error::Builder(
+                    "Failed to create pkcs7 signed data".to_string(),
+                ))
+            }
+        }
+    } else {
+        // No signer specified, skip signing
+        Ok(())
+    }
+}
+
+fn data_to_sign(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
+    if std::path::Path::new(&cms.data_file).exists() {
+        std::fs::read(&cms.data_file).map_err(|e| cms::builder::Error::Builder(e.to_string()))
+    } else {
+        Err(cms::builder::Error::Builder(
+            "Found no file with message data".to_string(),
+        ))
+    }
+}
+
 fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
-    let cert_pem =
-        std::fs::read(&cms.recipient).map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
+    let cert_pem = match &cms.recipient {
+        Some(path) => {
+            std::fs::read(path).map_err(|e| cms::builder::Error::Builder(e.to_string()))?
+        }
+        None => {
+            return Err(cms::builder::Error::Builder(
+                "No recipient certificate specified".to_string(),
+            ));
+        }
+    };
     let cert = Certificate::from_pem(&cert_pem)?;
     match verify_encrypting_certificate(&cert) {
         Ok(_) => {}
@@ -727,7 +770,7 @@ mod tests {
 
         let cms_config = Cms {
             id: "test".to_string(),
-            recipient: cert_file.path().to_string_lossy().to_string(),
+            recipient: Some(cert_file.path().to_string_lossy().to_string()),
             data_file: data_file.path().to_string_lossy().to_string(),
             signer: None,
             detached: None,
@@ -785,7 +828,7 @@ mod tests {
                 cert_pem_file: cert_file.path().to_string_lossy().to_string(),
                 private_key_pem_file: key_file.path().to_string_lossy().to_string(),
             }),
-            recipient: cert_file.path().to_string_lossy().to_string(),
+            recipient: Some(cert_file.path().to_string_lossy().to_string()),
             data_file: data_file.path().to_string_lossy().to_string(),
             detached: Some(detached),
         };
@@ -1459,7 +1502,7 @@ mod tests {
     fn test_create_cms_with_nonexistent_files() {
         let cms_config = Cms {
             id: "test".to_string(),
-            recipient: "nonexistent_cert.pem".to_string(),
+            recipient: Some("nonexistent_cert.pem".to_string()),
             data_file: "nonexistent_data.txt".to_string(),
             signer: None,
             detached: None,

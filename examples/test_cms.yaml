@@ -1,9 +1,35 @@
 cmss:
   - cms:
-      id: test1
+      id: cms_only
+      recipient: ./certs/client2encrypt_cert.pem
+      data_file: ./examples/message.txt
+  - cms:
+      id: cms_signed
       signer:
         cert_pem_file: "./certs/maincadoc_cert.pem"
         private_key_pem_file: "./certs/maincadoc_pkey.pem"
       recipient: ./certs/client2encrypt_cert.pem
+      data_file: ./examples/message.txt
+      detached: false
+  - cms:
+      id: cms_signed_detached
+      signer:
+        cert_pem_file: "./certs/maincadoc_cert.pem"
+        private_key_pem_file: "./certs/maincadoc_pkey.pem"
+      recipient: ./certs/client2encrypt_cert.pem
+      data_file: ./examples/message.txt
+      detached: true
+  - cms:
+      id: clear_signed
+      signer:
+        cert_pem_file: "./certs/maincadoc_cert.pem"
+        private_key_pem_file: "./certs/maincadoc_pkey.pem"
+      data_file: ./examples/message.txt
+      detached: false
+  - cms:
+      id: clear_signed_detached
+      signer:
+        cert_pem_file: "./certs/maincadoc_cert.pem"
+        private_key_pem_file: "./certs/maincadoc_pkey.pem"
       data_file: ./examples/message.txt
       detached: true

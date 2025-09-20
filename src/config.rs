@@ -221,7 +221,7 @@ pub struct CmsWrapper {
 pub struct Cms {
     pub id: String,
     pub signer: Option<Signer>,
-    pub recipient: String,
+    pub recipient: Option<String>,
     pub data_file: String,
     pub detached: Option<bool>,
 }
@@ -488,7 +488,10 @@ cmss:
         let data = result.unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].id, "test1".to_string());
-        assert_eq!(data[0].recipient, "client2encrypt_cert.pem".to_string());
+        assert_eq!(
+            data[0].recipient,
+            Some("client2encrypt_cert.pem".to_string())
+        );
         assert_eq!(data[0].data_file, "./examples/message.txt".to_string());
         assert_eq!(
             data[0].signer,

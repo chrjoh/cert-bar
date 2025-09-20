@@ -6,7 +6,7 @@ Assume that the needed certificates are generated from `test.yaml`
 
 ```bash
 openssl cms -verify \
- -in ./cms_data/test1.pkcs7 \
+ -in ./cms_data/cms_signed.pkcs7 \
  -inform DER \
  -CAfile ./certs/maincadoc_cert.pem \
  -signer ./certs/maincadoc_cert.pem \
@@ -28,8 +28,8 @@ Verify a detached signature using cms, `-binary` is needed to avoid openssl to p
 the `pkcs7-envelopedData` that the cms is constructed as.
 
 ```bash
-openssl cms -verify -in ./cms_data/test1.p7s -inform der \
--content ./cms_data/test1.cms \
+openssl cms -verify -in ./cms_data/cms_signed_detached.p7s -inform der \
+-content ./cms_data/cms_signed_detached.cms \
 -CAfile ./certs/maincadoc_cert.pem -binary > /dev/null
 ```
 
@@ -37,7 +37,26 @@ Verfification of the detached signature can also be done with `openssl smime` th
 more forgiving when it comes to the input format.
 
 ```bash
-openssl smime -verify -in ./cms_data/test1.p7s -inform der \
--content ./cms_data/test1.cms \
+openssl smime -verify -in ./cms_data/cms_signed_detached.p7s -inform der \
+-content ./cms_data/cms_signed_detached.cms \
 -CAfile ./certs/maincadoc_cert.pem > /dev/null
+```
+
+Verify clear text signature
+
+```bash
+openssl cms -verify \
+ -in ./cms_data/clear_signed.pkcs7 \
+ -inform DER \
+ -CAfile ./certs/maincadoc_cert.pem \
+ -signer ./certs/maincadoc_cert.pem \
+ -out ./cms_data/clear_signed_verified_content.dat
+```
+
+Verify clear text signature that is detached
+
+```bash
+ openssl cms -verify -in ./cms_data/clear_signed_detached.p7s -inform der \
+-content ./examples/message.txt \
+-CAfile ./certs/maincadoc_cert.pem -binary > /dev/null
 ```
