@@ -60,6 +60,23 @@ cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
 cargo run -- cms --config-file ./examples/cms_config.yaml --output-dir ./cms_data
 ```
 
+### Post-Quantum Cryptography (PQC)
+
+In addition to the classical key types, **certificates**, **CSRs**, and **CRLs** support post-quantum algorithms. The available PQC key types are:
+
+- `MlDsa44`, `MlDsa65`, `MlDsa87` — FIPS 204 (ML-DSA, formerly Dilithium)
+- `SlhDsaSha2_128s`, `SlhDsaSha2_192s`, `SlhDsaSha2_256s` — FIPS 205 (SLH-DSA, formerly SPHINCS+)
+
+To enable PQC support build with:
+
+```bash
+cargo build --features pqc
+```
+
+> **Note:** This requires OpenSSL **≥ 3.5** at both build and runtime — enforced by `cert-helper`'s `build.rs`. The `pqc` feature is a compile-time toggle only; the linked binary will support either classical or post-quantum keys depending on which OpenSSL version it was built against.
+
+PQC key types are **not** supported for CMS constructs.
+
 ## Config
 
 ## Certificates
