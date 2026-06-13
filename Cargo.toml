@@ -7,7 +7,7 @@ default = []
 pqc = ["cert-helper/pqc"]
 
 [dependencies]
-cert-helper = "0.4.3"
+cert-helper = "0.4.4"
 chrono = "0.4.41"
 clap = { version = "4.5.41", features = ["derive"] }
 cms = { version = "0.2.3", features = ["builder"] }
