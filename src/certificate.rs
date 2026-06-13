@@ -15,10 +15,10 @@ pub trait SignerLoader {
 
 /// Trait for creating certificates using a signer (parent) if provided.
 pub trait CertificateCreator {
-    fn create<'a>(
+    fn create(
         &self,
         cert: &Certificate,
-        signer: Option<&'a CreatedCertificate>,
+        signer: Option<&CreatedCertificate>,
     ) -> Result<CreatedCertificate, Box<dyn std::error::Error>>;
 }
 
@@ -43,10 +43,10 @@ impl SignerLoader for RealSignerLoader {
 pub struct RealCertificateCreator;
 
 impl CertificateCreator for RealCertificateCreator {
-    fn create<'a>(
+    fn create(
         &self,
         cert: &Certificate,
-        signer: Option<&'a CreatedCertificate>,
+        signer: Option<&CreatedCertificate>,
     ) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
         create_certificate(cert, signer)
     }
@@ -61,7 +61,7 @@ impl CertificateSaver for RealCertificateSaver {
         path: &str,
         id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        cert.cert.save(path, id).map_err(|e| e.into())
+        cert.cert.save(path, id)
     }
 }
 
@@ -119,7 +119,7 @@ fn create_inner<C: AsRef<Path>>(
 
     // Index certificates and build dependency map
     for cert in &flat_certs {
-        cert_map.insert(cert.id.clone(), &cert);
+        cert_map.insert(cert.id.clone(), cert);
         if let Some(parent_id) = &cert.parent {
             dependents
                 .entry(parent_id.clone())
@@ -158,11 +158,11 @@ fn create_inner<C: AsRef<Path>>(
             for child_id in children {
                 if !created.contains_key(child_id) && !queued.contains(child_id) {
                     let child = &cert_map[child_id];
-                    if let Some(parent_id) = &child.parent {
-                        if created.contains_key(parent_id) {
-                            ready_queue.push_back(child_id.clone());
-                            queued.insert(child_id.clone());
-                        }
+                    if let Some(parent_id) = &child.parent
+                        && created.contains_key(parent_id)
+                    {
+                        ready_queue.push_back(child_id.clone());
+                        queued.insert(child_id.clone());
                     }
                 }
             }
@@ -179,9 +179,9 @@ fn create_inner<C: AsRef<Path>>(
     Ok(())
 }
 
-fn create_certificate<'a>(
+fn create_certificate(
     cert: &Certificate,
-    signer: Option<&'a CreatedCertificate>,
+    signer: Option<&CreatedCertificate>,
 ) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
     let usage: HashSet<CHUsage> = cert
         .usage
@@ -192,7 +192,7 @@ fn create_certificate<'a>(
         .altnames
         .as_ref()
         .map(|vec| vec.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_else(|| Vec::new());
+        .unwrap_or_default();
     let key_type = CHKeyType::from_key_type(cert.keytype.clone(), cert.keylength);
 
     // Skip hash check for Ed25519 and PQC keys (they handle hashing internally via cert_helper)
@@ -217,7 +217,7 @@ fn create_certificate<'a>(
         .organization(&cert.pkix.organization)
         .alternative_names(alt_names_as_str_vec)
         .key_usage(usage)
-        .key_type(CHKeyType::from(key_type))
+        .key_type(key_type)
         .is_ca(cert.ca.unwrap_or(false));
     if let Some(hash_alg) = &cert.hashalg {
         builder = builder.signature_alg(CHHashAlg::from(hash_alg.clone()));

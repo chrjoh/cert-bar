@@ -24,6 +24,7 @@ impl From<HashAlg> for CHHashAlg {
         }
     }
 }
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub enum KeyType {
     RSA,
@@ -204,7 +205,7 @@ impl From<Reason> for CrlReason {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct CRL {
+pub struct Crl {
     pub crl_file: String,
     pub signer: Signer,
     #[serde(default)]
@@ -233,7 +234,7 @@ where
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CMSS {
+pub struct Cmss {
     cmss: Vec<CmsWrapper>,
 }
 
@@ -319,7 +320,7 @@ pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std
 /// # Errors
 ///
 /// Returns an error if the file does not exist or if the YAML content is invalid.
-pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::error::Error>> {
+pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<Crl, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
     match serde_yaml::from_str(&yaml_str) {
         Ok(data) => Ok(data),
@@ -330,7 +331,7 @@ pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::er
 pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
 
-    let cmss: CMSS = serde_yaml::from_str(&yaml_str)?;
+    let cmss: Cmss = serde_yaml::from_str(&yaml_str)?;
     let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
     Ok(flat_cmss)
 }

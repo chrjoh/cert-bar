@@ -18,7 +18,7 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Create certificates
-    CERT {
+    Cert {
         /// The config file for defining the certificates to create
         #[arg(short, long, default_value = "./examples/test.yaml")]
         config_file: String,
@@ -26,7 +26,7 @@ enum Commands {
         output_dir: String,
     },
     /// Create certificate signing requests
-    CSR {
+    Csr {
         #[arg(short, long, default_value = "./examples/test_csr.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./certs")]
@@ -34,14 +34,14 @@ enum Commands {
     },
 
     /// Create certificate revocation lists
-    CRL {
+    Crl {
         #[arg(short, long, default_value = "./examples/test_crl.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./certs")]
         output_dir: String,
     },
     /// Create Cryptographic Message
-    CMS {
+    Cms {
         #[arg(short, long, default_value = "./examples/test_cms.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./cms_data")]
@@ -53,7 +53,7 @@ fn main() {
     let args = Args::parse();
 
     match args.command {
-        Commands::CERT {
+        Commands::Cert {
             config_file,
             output_dir,
         } => match read_certificate_config(config_file) {
@@ -63,7 +63,7 @@ fn main() {
             },
             Err(e) => println!("Failed to read certificate config file with error: {}", e),
         },
-        Commands::CSR {
+        Commands::Csr {
             config_file,
             output_dir,
         } => match read_csr_config(config_file) {
@@ -79,7 +79,7 @@ fn main() {
             }
             Err(e) => println!("Failed to read csr config file with error: {}", e),
         },
-        Commands::CRL {
+        Commands::Crl {
             config_file,
             output_dir,
         } => match read_crl_config(config_file) {
@@ -89,7 +89,7 @@ fn main() {
             },
             Err(e) => println!("Failed to read crl config file with error: {}", e),
         },
-        Commands::CMS {
+        Commands::Cms {
             config_file,
             output_dir,
         } => match read_cms_config(config_file) {

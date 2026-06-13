@@ -1,4 +1,4 @@
-use crate::config::CRL;
+use crate::config::Crl;
 use cert_helper::certificate::Certificate as CHCertificate;
 use cert_helper::crl::{CrlReason, X509CrlBuilder, X509CrlWrapper};
 use chrono::Utc;
@@ -29,7 +29,7 @@ use std::path::Path;
 /// - The CRL cannot be built or signed.
 /// - The final CRL cannot be saved to disk.
 pub fn handle<C: AsRef<Path>>(
-    crl_data: CRL,
+    crl_data: Crl,
     output_dir: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let signer = CHCertificate::load_cert_and_key(
@@ -101,7 +101,7 @@ GNwSHDA8nLhIpmdNaFkf2w==
         let (cert_path, key_path) = write_dummy_cert_and_key(&cert, dir_path);
 
         let crl_file_path = dir_path.join("test_crl.pem");
-        let crl_data = CRL {
+        let crl_data = Crl {
             signer: Signer {
                 cert_pem_file: cert_path,
                 private_key_pem_file: key_path,
@@ -137,7 +137,7 @@ GNwSHDA8nLhIpmdNaFkf2w==
         let cert = dummy_certificate();
         let (cert_path, key_path) = write_dummy_cert_and_key(&cert, dir_path);
 
-        let crl_data = CRL {
+        let crl_data = Crl {
             signer: Signer {
                 cert_pem_file: cert_path,
                 private_key_pem_file: key_path,

@@ -53,7 +53,7 @@ use x509_cert::time::Time;
 /// For each CMS configuration with ID "example":
 /// * `{output_dir}/{id}.cms` - Encrypted CMS message in DER format
 /// * `{output_dir}/{id}.pkcs7` - Signed CMS message in PKCS#7 format (only if signer is provided)
-/// alternative extension `.p7s` is used if the signature is detached
+/// *  alternative extension `.p7s` is used if the signature is detached
 ///
 /// # Behavior
 ///
@@ -82,19 +82,19 @@ pub fn handle<C: AsRef<Path>>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for cms in &cms_data {
         let data_result = if cms.recipient.is_some() {
-            create_cms(&cms)
+            create_cms(cms)
         } else {
-            data_to_sign(&cms)
+            data_to_sign(cms)
         };
 
         if let Ok(data) = data_result {
-            if cms.recipient.is_some() {
-                if let Err(e) = save_file_with_extension(&output_dir, &cms.id, "cms", &data) {
-                    eprintln!("Failed to save CMS file: {}", e);
-                    continue;
-                }
+            if cms.recipient.is_some()
+                && let Err(e) = save_file_with_extension(&output_dir, &cms.id, "cms", &data)
+            {
+                eprintln!("Failed to save CMS file: {}", e);
+                continue;
             }
-            if let Err(e) = sign_and_save(&cms, &data, &output_dir) {
+            if let Err(e) = sign_and_save(cms, &data, &output_dir) {
                 eprintln!("Failed to sign data: {}", e);
             }
         } else {
@@ -119,7 +119,7 @@ fn sign_and_save<C: AsRef<Path>>(
             CHCertificate::load_cert_and_key(&signer.cert_pem_file, &signer.private_key_pem_file)
                 .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
         let detached = cms.detached.unwrap_or(false);
-        match create_pkcs7_signed_data(&res, &signer_cert, detached) {
+        match create_pkcs7_signed_data(res, &signer_cert, detached) {
             Ok(pkcs7_der) => {
                 let extension = if detached { "p7s" } else { "pkcs7" };
                 save_file_with_extension(&output_dir, &cms.id, extension, &pkcs7_der)
@@ -239,6 +239,7 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     Ok(der_encoded)
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum DetectedKey {
     Rsa(pkcs1v15::SigningKey<Sha256>),
@@ -621,9 +622,10 @@ fn verify_key_usage_for_signing(cert: &Certificate) -> Result<(), String> {
                         return Ok(());
                     }
 
-                    return Err(format!(
+                    return Err(
                         "Certificate has Key Usage extension but does not allow signing."
-                    ));
+                            .to_string(),
+                    );
                 }
                 Err(e) => {
                     return Err(format!("Failed to parse Key Usage extension: {}", e));
@@ -656,9 +658,10 @@ fn verify_key_usage_for_encryption(cert: &Certificate) -> Result<(), String> {
                         return Ok(());
                     }
 
-                    return Err(format!(
+                    return Err(
                         "Certificate has Key Usage extension but does not allow encryption."
-                    ));
+                            .to_string(),
+                    );
                 }
                 Err(e) => {
                     return Err(format!("Failed to parse Key Usage extension: {}", e));
