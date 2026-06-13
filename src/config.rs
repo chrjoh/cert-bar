@@ -18,7 +18,7 @@ impl From<HashAlg> for CHHashAlg {
     fn from(h: HashAlg) -> Self {
         match h {
             HashAlg::SHA1 => CHHashAlg::SHA1,
-            HashAlg::SHA384 => CHHashAlg::SHA256,
+            HashAlg::SHA384 => CHHashAlg::SHA384,
             HashAlg::SHA512 => CHHashAlg::SHA512,
             _ => CHHashAlg::SHA256,
         }
@@ -32,6 +32,18 @@ pub enum KeyType {
     P384,
     P521,
     Ed25519,
+    #[cfg(feature = "pqc")]
+    MlDsa44,
+    #[cfg(feature = "pqc")]
+    MlDsa65,
+    #[cfg(feature = "pqc")]
+    MlDsa87,
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2_128s,
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2_192s,
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2_256s,
 }
 
 pub trait FromKeyType {
@@ -50,6 +62,18 @@ impl FromKeyType for CHKeyType {
             KeyType::P384 => CHKeyType::P384,
             KeyType::P521 => CHKeyType::P521,
             KeyType::Ed25519 => CHKeyType::Ed25519,
+            #[cfg(feature = "pqc")]
+            KeyType::MlDsa44 => CHKeyType::MlDsa44,
+            #[cfg(feature = "pqc")]
+            KeyType::MlDsa65 => CHKeyType::MlDsa65,
+            #[cfg(feature = "pqc")]
+            KeyType::MlDsa87 => CHKeyType::MlDsa87,
+            #[cfg(feature = "pqc")]
+            KeyType::SlhDsaSha2_128s => CHKeyType::SlhDsaSha2_128s,
+            #[cfg(feature = "pqc")]
+            KeyType::SlhDsaSha2_192s => CHKeyType::SlhDsaSha2_192s,
+            #[cfg(feature = "pqc")]
+            KeyType::SlhDsaSha2_256s => CHKeyType::SlhDsaSha2_256s,
         }
     }
 }
@@ -316,6 +340,11 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_sha384_maps_correctly() {
+        assert_eq!(HashAlg::from(HashAlg::SHA384), HashAlg::SHA384);
+    }
 
     #[test]
     fn test_read_certificate_config_valid_yaml() {

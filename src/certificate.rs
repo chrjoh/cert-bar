@@ -188,9 +188,21 @@ fn create_certificate<'a>(
         .unwrap_or_else(|| Vec::new());
     let key_type = CHKeyType::from_key_type(cert.keytype.clone(), cert.keylength);
 
-    // Panic if key_type is not Ed25519 and no hash algorithm is set
-    if key_type != CHKeyType::Ed25519 && cert.hashalg.is_none() {
-        panic!("Hash algorithm must be set for non-Ed25519 keys");
+    // Panic if key_type is not Ed25519 (or PQC) and no hash algorithm is set.
+    // PQC keys handle hashing internally via cert_helper — no explicit hashalg needed.
+    let skip_hash_check = match key_type {
+        CHKeyType::Ed25519 => true,
+        #[cfg(feature = "pqc")]
+        CHKeyType::MlDsa44
+        | CHKeyType::MlDsa65
+        | CHKeyType::MlDsa87
+        | CHKeyType::SlhDsaSha2_128s
+        | CHKeyType::SlhDsaSha2_192s
+        | CHKeyType::SlhDsaSha2_256s => true,
+        _ => false,
+    };
+    if !skip_hash_check && cert.hashalg.is_none() {
+        panic!("Hash algorithm must be set for non-Ed25519 or PQC keys");
     }
 
     let mut builder = CertBuilder::new()
