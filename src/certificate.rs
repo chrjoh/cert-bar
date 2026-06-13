@@ -8,18 +8,21 @@ use std::path::Path;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Trait for loading a signer certificate and key.
 pub trait SignerLoader {
-    fn load(&self, signer: &Signer) -> CreatedCertificate;
+    fn load(&self, signer: &Signer) -> Result<CreatedCertificate, Box<dyn std::error::Error>>;
 }
 
+/// Trait for creating certificates using a signer (parent) if provided.
 pub trait CertificateCreator {
     fn create<'a>(
         &self,
         cert: &Certificate,
         signer: Option<&'a CreatedCertificate>,
-    ) -> CreatedCertificate;
+    ) -> Result<CreatedCertificate, Box<dyn std::error::Error>>;
 }
 
+/// Trait for saving certificates to disk.
 pub trait CertificateSaver {
     fn save(
         &self,
@@ -32,7 +35,7 @@ pub trait CertificateSaver {
 pub struct RealSignerLoader;
 
 impl SignerLoader for RealSignerLoader {
-    fn load(&self, signer: &Signer) -> CreatedCertificate {
+    fn load(&self, signer: &Signer) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
         load_signer_from_file(signer)
     }
 }
@@ -44,7 +47,7 @@ impl CertificateCreator for RealCertificateCreator {
         &self,
         cert: &Certificate,
         signer: Option<&'a CreatedCertificate>,
-    ) -> CreatedCertificate {
+    ) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
         create_certificate(cert, signer)
     }
 }
@@ -138,7 +141,7 @@ fn create_inner<C: AsRef<Path>>(
         let signer_cert = if let Some(signer) = &cert.signer {
             let signer_id = format!("file:{}", signer.cert_pem_file);
             if !external_signers.contains_key(&signer_id) {
-                let loaded = signer_loader.load(signer);
+                let loaded = signer_loader.load(signer)?;
                 external_signers.insert(signer_id.clone(), loaded);
             }
             external_signers.get(&signer_id)
@@ -148,7 +151,7 @@ fn create_inner<C: AsRef<Path>>(
             None
         };
 
-        let new_cert = cert_creator.create(cert, signer_cert);
+        let new_cert = cert_creator.create(cert, signer_cert)?;
         created.insert(cert.id.clone(), new_cert);
 
         if let Some(children) = dependents.get(&cert.id) {
@@ -167,7 +170,11 @@ fn create_inner<C: AsRef<Path>>(
     }
     println!("\nAll certificates created:");
     for (id, v) in &created {
-        cert_saver.save(v, output_dir.as_ref().to_str().unwrap(), id)?;
+        let path = output_dir
+            .as_ref()
+            .to_str()
+            .ok_or("Output directory path is not a valid UTF-8 string")?;
+        cert_saver.save(v, path, id)?;
     }
     Ok(())
 }
@@ -175,7 +182,7 @@ fn create_inner<C: AsRef<Path>>(
 fn create_certificate<'a>(
     cert: &Certificate,
     signer: Option<&'a CreatedCertificate>,
-) -> CreatedCertificate {
+) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
     let usage: HashSet<CHUsage> = cert
         .usage
         .as_ref()
@@ -188,8 +195,7 @@ fn create_certificate<'a>(
         .unwrap_or_else(|| Vec::new());
     let key_type = CHKeyType::from_key_type(cert.keytype.clone(), cert.keylength);
 
-    // Panic if key_type is not Ed25519 (or PQC) and no hash algorithm is set.
-    // PQC keys handle hashing internally via cert_helper — no explicit hashalg needed.
+    // Skip hash check for Ed25519 and PQC keys (they handle hashing internally via cert_helper)
     let skip_hash_check = match key_type {
         CHKeyType::Ed25519 => true,
         #[cfg(feature = "pqc")]
@@ -202,7 +208,7 @@ fn create_certificate<'a>(
         _ => false,
     };
     if !skip_hash_check && cert.hashalg.is_none() {
-        panic!("Hash algorithm must be set for non-Ed25519 or PQC keys");
+        return Err("Hash algorithm must be set for non-Ed25519 or PQC keys".into());
     }
 
     let mut builder = CertBuilder::new()
@@ -223,19 +229,21 @@ fn create_certificate<'a>(
         Some(signer) => builder.build_and_sign(&signer.cert),
         _ => builder.build_and_self_sign(),
     };
-    CreatedCertificate {
+    Ok(CreatedCertificate {
         id: cert.id.clone(),
-        cert: ch_cert.unwrap(),
-    }
+        cert: ch_cert?,
+    })
 }
-fn load_signer_from_file(signer: &Signer) -> CreatedCertificate {
+
+fn load_signer_from_file(
+    signer: &Signer,
+) -> Result<CreatedCertificate, Box<dyn std::error::Error>> {
     let loaded_cert =
-        CHCertificate::load_cert_and_key(&signer.cert_pem_file, &signer.private_key_pem_file)
-            .expect("failed to load cert and key");
-    CreatedCertificate {
+        CHCertificate::load_cert_and_key(&signer.cert_pem_file, &signer.private_key_pem_file)?;
+    Ok(CreatedCertificate {
         id: format!("file:{}", signer.cert_pem_file),
         cert: loaded_cert,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -248,32 +256,32 @@ mod tests {
     use mockall::{mock, predicate::*};
 
     mock! {
-        pub SignerLoader {}
+      pub SignerLoader {}
 
-        impl SignerLoader for SignerLoader {
-            fn load(&self, signer: &Signer) -> CreatedCertificate;
+      impl SignerLoader for SignerLoader {
+          fn load(&self, signer: &Signer) -> Result<CreatedCertificate, Box<dyn std::error::Error>>;
         }
     }
 
     mock! {
-        pub CertificateCreator{}
-        impl CertificateCreator for CertificateCreator{
-            fn create<'a>(
-                &self,
-                cert: &Certificate,
-                signer: Option<&'a CreatedCertificate>,
-            ) -> CreatedCertificate;
+      pub CertificateCreator{}
+      impl CertificateCreator for CertificateCreator{
+          fn create<'a>(
+               &self,
+              cert: &Certificate,
+              signer: Option<&'a CreatedCertificate>,
+            ) -> Result<CreatedCertificate, Box<dyn std::error::Error>>;
         }
     }
 
     mock! {
-        pub CertificateSaver{}
-        impl CertificateSaver for CertificateSaver{
-            fn save(
-                &self,
-                cert: &CreatedCertificate,
-                path: &str,
-                id: &str,
+      pub CertificateSaver{}
+      impl CertificateSaver for CertificateSaver{
+          fn save(
+               &self,
+              cert: &CreatedCertificate,
+              path: &str,
+              id: &str,
             ) -> Result<(), Box<dyn std::error::Error>>;
         }
     }
@@ -359,17 +367,22 @@ mod tests {
             cert: child,
         };
 
-        // Expect signer to be loaded
+        // Expect signer to be loaded — each mock needs its own owned clone variable
+        let root_for_loader = created_root.clone();
+        let root_for_creator = created_root.clone();
+        let inter_for_creator = created_inter.clone();
+        let child_for_creator = created_child.clone();
+
         mock_loader
             .expect_load()
             .withf(|signer| signer.cert_pem_file == "root.pem")
-            .return_const(created_root.clone());
+            .returning(move |_| Ok(root_for_loader.clone()));
 
         // Expect root certificate to be created
         mock_creator
             .expect_create()
             .withf(|cert, _| cert.id == "root")
-            .return_const(created_root.clone());
+            .returning(move |_, _| Ok(root_for_creator.clone()));
 
         // Expect inter certificate to be created
         mock_creator
@@ -377,14 +390,15 @@ mod tests {
             .withf(|cert, signer| {
                 cert.id == "inter" && signer.map(|s| s.id.as_str()) == Some("root")
             })
-            .return_const(created_inter.clone());
+            .returning(move |_, _| Ok(inter_for_creator.clone()));
+
         // Expect child certificate to be created
         mock_creator
             .expect_create()
             .withf(|cert, signer| {
                 cert.id == "child" && signer.map(|s| s.id.as_str()) == Some("inter")
             })
-            .return_const(created_child.clone());
+            .returning(move |_, _| Ok(child_for_creator.clone()));
 
         // Expect all certificates to be saved
         mock_saver

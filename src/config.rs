@@ -266,7 +266,7 @@ pub struct Cms {
 pub fn read_certificate_config<C: AsRef<Path>>(
     config: C,
 ) -> Result<Vec<Certificate>, Box<dyn std::error::Error>> {
-    let yaml_str = fs::read_to_string(config).expect("No config file found");
+    let yaml_str = fs::read_to_string(config)?;
 
     let certs: Certificates = serde_yaml::from_str(&yaml_str)?;
     let flat_certs: Vec<Certificate> = certs
@@ -291,7 +291,7 @@ pub fn read_certificate_config<C: AsRef<Path>>(
 ///
 /// Returns an error if the file does not exist or if the YAML content is invalid.
 pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std::error::Error>> {
-    let yaml_str = fs::read_to_string(config).expect("No config file found");
+    let yaml_str = fs::read_to_string(config)?;
 
     let csrs: Csrs = serde_yaml::from_str(&yaml_str)?;
     let flat_csr: Vec<Csr> = csrs.csrs.into_iter().map(|wrapper| wrapper.csr).collect();
@@ -320,7 +320,7 @@ pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std
 ///
 /// Returns an error if the file does not exist or if the YAML content is invalid.
 pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::error::Error>> {
-    let yaml_str = fs::read_to_string(config).expect("No config file found");
+    let yaml_str = fs::read_to_string(config)?;
     match serde_yaml::from_str(&yaml_str) {
         Ok(data) => Ok(data),
         Err(e) => Err(e.into()),
@@ -328,7 +328,7 @@ pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<CRL, Box<dyn std::er
 }
 
 pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn std::error::Error>> {
-    let yaml_str = fs::read_to_string(config).expect("No config file found");
+    let yaml_str = fs::read_to_string(config)?;
 
     let cmss: CMSS = serde_yaml::from_str(&yaml_str)?;
     let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
