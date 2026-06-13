@@ -90,9 +90,21 @@ fn handle_csr<C: AsRef<Path>>(csr: Csr, output_dir: C) -> Result<(), Box<dyn std
     builder = builder.organization(&csr.pkix.organization);
     builder = builder.common_name(&csr.pkix.commonname);
     builder = builder.key_type(CHKeyType::from_key_type(csr.keytype.clone(), csr.keylength));
-    match (&csr.hashalg, csr.keytype) {
+    // Ed25519 and PQC keys sign without an external digest, so a hash algorithm
+    // is optional for them (mirrors the skip_hash_check logic in certificate.rs).
+    match (&csr.hashalg, &csr.keytype) {
         (Some(hashalg), _) => builder = builder.signature_alg(CHHashAlg::from(hashalg.clone())),
         (None, KeyType::Ed25519) => {}
+        #[cfg(feature = "pqc")]
+        (
+            None,
+            KeyType::MlDsa44
+            | KeyType::MlDsa65
+            | KeyType::MlDsa87
+            | KeyType::SlhDsaSha2_128s
+            | KeyType::SlhDsaSha2_192s
+            | KeyType::SlhDsaSha2_256s,
+        ) => {}
         (None, _) => return Err("Missing hash Alg for creating CSR".into()),
     }
 
@@ -148,6 +160,32 @@ mod tests {
         assert!(result.is_ok());
 
         let expected_path = temp_dir.path().join("test1_csr.pem");
+        assert!(expected_path.exists());
+    }
+
+    #[cfg(feature = "pqc")]
+    #[test]
+    fn test_handle_csr_with_pqc_key() {
+        // A PQC key (ML-DSA-65) must produce a CSR without any hash algorithm,
+        // since PQC keys sign digestlessly.
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let csr = Csr {
+            id: "pqc_csr".to_string(),
+            pkix: Pkix {
+                commonname: "pqc.example.com".to_string(),
+                country: "SE".to_string(),
+                organization: "TestOrg".to_string(),
+            },
+            keytype: KeyType::MlDsa65,
+            altnames: None,
+            hashalg: None,
+            keylength: None,
+            usage: Some(vec![Usage::serverauth]),
+        };
+
+        handle_csr(csr, &temp_dir).unwrap();
+
+        let expected_path = temp_dir.path().join("pqc_csr_csr.pem");
         assert!(expected_path.exists());
     }
 

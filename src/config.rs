@@ -347,9 +347,18 @@ mod tests {
         // Each config HashAlg must convert to its matching cert_helper CHHashAlg.
         // CHHashAlg has no PartialEq, so match on the resulting variant instead.
         assert!(matches!(CHHashAlg::from(HashAlg::SHA1), CHHashAlg::SHA1));
-        assert!(matches!(CHHashAlg::from(HashAlg::SHA256), CHHashAlg::SHA256));
-        assert!(matches!(CHHashAlg::from(HashAlg::SHA384), CHHashAlg::SHA384));
-        assert!(matches!(CHHashAlg::from(HashAlg::SHA512), CHHashAlg::SHA512));
+        assert!(matches!(
+            CHHashAlg::from(HashAlg::SHA256),
+            CHHashAlg::SHA256
+        ));
+        assert!(matches!(
+            CHHashAlg::from(HashAlg::SHA384),
+            CHHashAlg::SHA384
+        ));
+        assert!(matches!(
+            CHHashAlg::from(HashAlg::SHA512),
+            CHHashAlg::SHA512
+        ));
     }
 
     #[test]

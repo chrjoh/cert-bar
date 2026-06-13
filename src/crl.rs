@@ -161,6 +161,44 @@ GNwSHDA8nLhIpmdNaFkf2w==
         assert!(contents.contains("BEGIN X509 CRL"));
     }
 
+    #[cfg(feature = "pqc")]
+    #[test]
+    fn test_handle_creates_crl_file_with_pqc_signer() {
+        use cert_helper::certificate::KeyType as CHKeyType;
+
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // A PQC CA (ML-DSA-44) signs the CRL using the digestless path.
+        let cert = CertBuilder::new()
+            .common_name("My Test PQC Ca")
+            .is_ca(true)
+            .key_type(CHKeyType::MlDsa44)
+            .build_and_self_sign()
+            .unwrap();
+        let (cert_path, key_path) = write_dummy_cert_and_key(&cert, dir_path);
+
+        let crl_file_path = dir_path.join("pqc_crl.pem");
+        let crl_data = Crl {
+            signer: Signer {
+                cert_pem_file: cert_path,
+                private_key_pem_file: key_path,
+            },
+            crl_file: crl_file_path.to_str().unwrap().to_string(),
+            revoked: vec![RevokedCert {
+                cert_info: CertInfo {
+                    serial: BigUint::from_str_radix("1234567890", 10).unwrap(),
+                    reason: Reason::CaCompromise,
+                },
+            }],
+        };
+
+        handle(crl_data, dir_path).unwrap();
+
+        let contents = fs::read_to_string(&crl_file_path).unwrap();
+        assert!(contents.contains("BEGIN X509 CRL"));
+    }
+
     fn dummy_certificate() -> CHCertificate {
         CertBuilder::new()
             .common_name("My Test Ca")
