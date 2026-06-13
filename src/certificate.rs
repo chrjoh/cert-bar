@@ -408,6 +408,88 @@ mod tests {
 
         let result = create_inner(certs, &mock_loader, &mock_creator, &mock_saver, "");
 
-        assert!(result.is_ok());
+        result.unwrap();
+    }
+
+    /// Tests for post-quantum cryptography (PQC) key support.
+    ///
+    /// These tests are only compiled when the `pqc` feature is enabled, since the
+    /// PQC `KeyType` variants and their `cert_helper` counterparts only exist then.
+    #[cfg(feature = "pqc")]
+    mod pqc_keys {
+        use super::*;
+
+        /// Builds a minimal self-signing certificate config for the given PQC key type.
+        ///
+        /// PQC keys deliberately leave `hashalg` unset to exercise the `skip_hash_check`
+        /// path in `create_certificate`.
+        fn pqc_certificate(id: &str, keytype: KeyType, ca: bool) -> Certificate {
+            Certificate {
+                id: id.to_string(),
+                parent: None,
+                signer: None,
+                ca: Some(ca),
+                pkix: Pkix {
+                    commonname: id.to_string(),
+                    country: "SE".to_string(),
+                    organization: "Example Org".to_string(),
+                },
+                keytype,
+                altnames: None,
+                hashalg: None,
+                keylength: None,
+                validto: None,
+                usage: None,
+            }
+        }
+
+        #[test]
+        fn creates_self_signed_ml_dsa_certificates() {
+            // Invoke: each ML-DSA security level should produce a self-signed cert.
+            for keytype in [KeyType::MlDsa44, KeyType::MlDsa65, KeyType::MlDsa87] {
+                let cert = pqc_certificate("ml-dsa-root", keytype.clone(), true);
+
+                let created = create_certificate(&cert, None)
+                    .unwrap_or_else(|e| panic!("failed to create {keytype:?} certificate: {e}"));
+
+                // Expect: the created certificate keeps the configured id.
+                assert_eq!(created.id, "ml-dsa-root");
+            }
+        }
+
+        #[test]
+        fn creates_self_signed_slh_dsa_certificate() {
+            // Invoke: the smallest (fastest) SLH-DSA variant proves the family works.
+            let cert = pqc_certificate("slh-dsa-root", KeyType::SlhDsaSha2_128s, true);
+
+            let created = create_certificate(&cert, None).unwrap();
+
+            assert_eq!(created.id, "slh-dsa-root");
+        }
+
+        #[test]
+        fn pqc_key_does_not_require_hash_algorithm() {
+            // Setup: a PQC certificate with no hash algorithm set.
+            let cert = pqc_certificate("ml-dsa-no-hash", KeyType::MlDsa44, false);
+            assert!(cert.hashalg.is_none());
+
+            // Invoke & expect: creation succeeds despite the missing hash algorithm,
+            // confirming the skip_hash_check branch covers PQC keys.
+            create_certificate(&cert, None).unwrap();
+        }
+
+        #[test]
+        fn signs_pqc_certificate_with_pqc_signer() {
+            // Setup: a self-signed ML-DSA root acting as a CA signer.
+            let root_cfg = pqc_certificate("pqc-root", KeyType::MlDsa65, true);
+            let root = create_certificate(&root_cfg, None).unwrap();
+
+            // Invoke: an end-entity certificate signed by the PQC root.
+            let leaf_cfg = pqc_certificate("pqc-leaf", KeyType::MlDsa44, false);
+            let leaf = create_certificate(&leaf_cfg, Some(&root)).unwrap();
+
+            // Expect: the signed leaf is created with its configured id.
+            assert_eq!(leaf.id, "pqc-leaf");
+        }
     }
 }

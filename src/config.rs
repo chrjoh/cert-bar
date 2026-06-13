@@ -343,8 +343,13 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_sha384_maps_correctly() {
-        assert_eq!(HashAlg::from(HashAlg::SHA384), HashAlg::SHA384);
+    fn test_hash_alg_maps_to_cert_helper_variant() {
+        // Each config HashAlg must convert to its matching cert_helper CHHashAlg.
+        // CHHashAlg has no PartialEq, so match on the resulting variant instead.
+        assert!(matches!(CHHashAlg::from(HashAlg::SHA1), CHHashAlg::SHA1));
+        assert!(matches!(CHHashAlg::from(HashAlg::SHA256), CHHashAlg::SHA256));
+        assert!(matches!(CHHashAlg::from(HashAlg::SHA384), CHHashAlg::SHA384));
+        assert!(matches!(CHHashAlg::from(HashAlg::SHA512), CHHashAlg::SHA512));
     }
 
     #[test]

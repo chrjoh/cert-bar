@@ -1379,13 +1379,13 @@ mod tests {
                                 // Let's examine what's at the position where it failed
                                 if inner_content.len() >= 10 {
                                     println!("Bytes at error position:");
-                                    for i in 0..10.min(inner_content.len()) {
+                                    for (i, &byte) in inner_content.iter().enumerate().take(10) {
                                         println!(
                                             "  [{}] = 0x{:02x} ({})",
                                             i,
-                                            inner_content[i],
-                                            if inner_content[i].is_ascii_graphic() {
-                                                inner_content[i] as char
+                                            byte,
+                                            if byte.is_ascii_graphic() {
+                                                byte as char
                                             } else {
                                                 '.'
                                             }
@@ -1410,12 +1410,12 @@ mod tests {
 
                                 // Show the exact bytes at the positions mentioned in the error
                                 println!("\nRaw bytes analysis:");
-                                for i in 0..20.min(signed_data.len()) {
+                                for (i, &byte) in signed_data.iter().enumerate().take(20) {
                                     println!(
                                         "  [{}] = 0x{:02x} (tag: {})",
                                         i,
-                                        signed_data[i],
-                                        match signed_data[i] {
+                                        byte,
+                                        match byte {
                                             0x30 => "SEQUENCE",
                                             0x02 => "INTEGER",
                                             0x04 => "OCTET STRING",

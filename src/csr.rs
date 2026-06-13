@@ -213,11 +213,8 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
             ca: Some(true),
         };
 
-        let result = handle_sign(request, temp_dir.path());
-        match result {
-            Ok(_) => assert!(true),
-            Err(e) => println!("Error: {:?}", e),
-        }
+        // Signing must succeed; unwrap prints the Err on failure.
+        handle_sign(request, temp_dir.path()).unwrap();
 
         let filename = Path::new(&csr_pem_file)
             .file_stem()
