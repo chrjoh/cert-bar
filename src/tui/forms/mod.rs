@@ -50,9 +50,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
     match app.screen {
         Screen::Cert => cert::render(frame, area, app.cert(), app, theme),
-        Screen::Csr => csr::render(frame, area, &app.csr, app, theme),
+        Screen::Csr => csr::render(frame, area, app.csr(), app, theme),
         Screen::Crl => crl::render(frame, area, &app.crl, app, theme),
-        Screen::Cms => cms::render(frame, area, &app.cms, app, theme),
+        Screen::Cms => cms::render(frame, area, app.cms(), app, theme),
         Screen::Menu => render_hint(frame, area, theme),
     }
 }

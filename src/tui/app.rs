@@ -416,12 +416,25 @@ pub struct App {
     /// Index of the certificate entry currently being edited. Always a valid
     /// index into `cert_list` (clamped on add/delete/select).
     pub cert_index: usize,
-    /// CSR form state.
-    pub csr: CsrForm,
+    /// CSR form entries. Invariant: never empty — [`App::new`] seeds a single
+    /// [`CsrForm::default`]. The CSR screen edits one entry at a time
+    /// (`csr_list[csr_index]`); each entry's `sign_mode` records whether it is a
+    /// generate-mode CSR or a sign-existing-CSR request. Reach the active entry
+    /// through [`App::csr`] / [`App::csr_mut`].
+    pub csr_list: Vec<CsrForm>,
+    /// Index of the CSR entry currently being edited. Always a valid index into
+    /// `csr_list` (clamped on add/delete/select).
+    pub csr_index: usize,
     /// CRL form state.
     pub crl: CrlForm,
-    /// CMS form state.
-    pub cms: CmsForm,
+    /// CMS form entries. Invariant: never empty — [`App::new`] seeds a single
+    /// [`CmsForm::default`]. The CMS screen edits one entry at a time
+    /// (`cms_list[cms_index]`). Reach the active entry through [`App::cms`] /
+    /// [`App::cms_mut`].
+    pub cms_list: Vec<CmsForm>,
+    /// Index of the CMS entry currently being edited. Always a valid index into
+    /// `cms_list` (clamped on add/delete/select).
+    pub cms_index: usize,
     /// Active confirm dialog, if any.
     pub dialog: Option<Dialog>,
     /// Active file-browser overlay, if any. Orthogonal to [`App::dialog`];
@@ -459,9 +472,11 @@ impl App {
             menu_index: 0,
             cert_list: vec![CertForm::default()],
             cert_index: 0,
-            csr: CsrForm::default(),
+            csr_list: vec![CsrForm::default()],
+            csr_index: 0,
             crl: CrlForm::default(),
-            cms: CmsForm::default(),
+            cms_list: vec![CmsForm::default()],
+            cms_index: 0,
             dialog: None,
             browser: None,
             error_popup: None,
@@ -505,6 +520,78 @@ impl App {
         &mut self.cert_list[idx]
     }
 
+    /// The in-range index of the active CSR entry.
+    ///
+    /// `csr_list` is never empty; this clamps a stale `csr_index` to `0` rather
+    /// than ever pointing past the end (mirrors [`App::active_cert_index`]).
+    fn active_csr_index(&self) -> usize {
+        if self.csr_index < self.csr_list.len() {
+            self.csr_index
+        } else {
+            0
+        }
+    }
+
+    /// Shared reference to the CSR entry currently being edited
+    /// (`csr_list[csr_index]`).
+    ///
+    /// `csr_list` is never empty (invariant maintained by [`App::new`] and the
+    /// add/delete reducer arms) and [`App::active_csr_index`] clamps any stale
+    /// index into range, so the indexing is always valid and never panics.
+    #[must_use]
+    pub fn csr(&self) -> &CsrForm {
+        let idx = self.active_csr_index();
+        &self.csr_list[idx]
+    }
+
+    /// Mutable reference to the CSR entry currently being edited.
+    ///
+    /// See [`App::csr`] for the never-empty invariant.
+    pub fn csr_mut(&mut self) -> &mut CsrForm {
+        let idx = self.active_csr_index();
+        &mut self.csr_list[idx]
+    }
+
+    /// The in-range index of the active CMS entry.
+    ///
+    /// `cms_list` is never empty; this clamps a stale `cms_index` to `0` rather
+    /// than ever pointing past the end (mirrors [`App::active_cert_index`]).
+    fn active_cms_index(&self) -> usize {
+        if self.cms_index < self.cms_list.len() {
+            self.cms_index
+        } else {
+            0
+        }
+    }
+
+    /// Shared reference to the CMS entry currently being edited
+    /// (`cms_list[cms_index]`).
+    ///
+    /// `cms_list` is never empty (invariant maintained by [`App::new`] and the
+    /// add/delete reducer arms) and [`App::active_cms_index`] clamps any stale
+    /// index into range, so the indexing is always valid and never panics.
+    #[must_use]
+    pub fn cms(&self) -> &CmsForm {
+        let idx = self.active_cms_index();
+        &self.cms_list[idx]
+    }
+
+    /// Mutable reference to the CMS entry currently being edited.
+    ///
+    /// See [`App::cms`] for the never-empty invariant.
+    pub fn cms_mut(&mut self) -> &mut CmsForm {
+        let idx = self.active_cms_index();
+        &mut self.cms_list[idx]
+    }
+
+    /// Whether `screen` carries a multi-entry sub-list (Cert / Csr / Cms), as
+    /// opposed to a single form (Crl) or no form (Menu). Drives the 3-way Tab
+    /// cycle and the entry add/delete/navigation handlers so they don't need to
+    /// special-case each entry-bearing screen individually.
+    fn screen_has_entries(screen: Screen) -> bool {
+        matches!(screen, Screen::Cert | Screen::Csr | Screen::Cms)
+    }
+
     /// Maps the selected menu index to its [`Screen`].
     #[must_use]
     pub fn menu_screen(&self) -> Screen {
@@ -543,9 +630,9 @@ impl App {
     fn active_field_mut(&mut self) -> Option<&mut usize> {
         match self.screen {
             Screen::Cert => Some(&mut self.cert_mut().field),
-            Screen::Csr => Some(&mut self.csr.field),
+            Screen::Csr => Some(&mut self.csr_mut().field),
             Screen::Crl => Some(&mut self.crl.field),
-            Screen::Cms => Some(&mut self.cms.field),
+            Screen::Cms => Some(&mut self.cms_mut().field),
             Screen::Menu => None,
         }
     }
@@ -944,24 +1031,30 @@ impl App {
                     _ => None,
                 }
             }
-            Screen::Csr => match target.field {
-                9 => Some(&mut self.csr.csr_pem_file),
-                13 => Some(&mut self.csr.signer.cert_pem_file),
-                14 => Some(&mut self.csr.signer.private_key_pem_file),
-                _ => None,
-            },
+            Screen::Csr => {
+                let csr = self.csr_mut();
+                match target.field {
+                    9 => Some(&mut csr.csr_pem_file),
+                    13 => Some(&mut csr.signer.cert_pem_file),
+                    14 => Some(&mut csr.signer.private_key_pem_file),
+                    _ => None,
+                }
+            }
             Screen::Crl => match target.field {
                 1 => Some(&mut self.crl.signer.cert_pem_file),
                 2 => Some(&mut self.crl.signer.private_key_pem_file),
                 _ => None,
             },
-            Screen::Cms => match target.field {
-                1 => Some(&mut self.cms.data_file),
-                2 => Some(&mut self.cms.recipient),
-                3 => Some(&mut self.cms.signer.cert_pem_file),
-                4 => Some(&mut self.cms.signer.private_key_pem_file),
-                _ => None,
-            },
+            Screen::Cms => {
+                let cms = self.cms_mut();
+                match target.field {
+                    1 => Some(&mut cms.data_file),
+                    2 => Some(&mut cms.recipient),
+                    3 => Some(&mut cms.signer.cert_pem_file),
+                    4 => Some(&mut cms.signer.private_key_pem_file),
+                    _ => None,
+                }
+            }
             Screen::Menu => None,
         };
         if let Some(buf) = buf {
@@ -982,24 +1075,30 @@ impl App {
                     _ => "",
                 }
             }
-            Screen::Csr => match target.field {
-                9 => &self.csr.csr_pem_file,
-                13 => &self.csr.signer.cert_pem_file,
-                14 => &self.csr.signer.private_key_pem_file,
-                _ => "",
-            },
+            Screen::Csr => {
+                let csr = self.csr();
+                match target.field {
+                    9 => &csr.csr_pem_file,
+                    13 => &csr.signer.cert_pem_file,
+                    14 => &csr.signer.private_key_pem_file,
+                    _ => "",
+                }
+            }
             Screen::Crl => match target.field {
                 1 => &self.crl.signer.cert_pem_file,
                 2 => &self.crl.signer.private_key_pem_file,
                 _ => "",
             },
-            Screen::Cms => match target.field {
-                1 => &self.cms.data_file,
-                2 => &self.cms.recipient,
-                3 => &self.cms.signer.cert_pem_file,
-                4 => &self.cms.signer.private_key_pem_file,
-                _ => "",
-            },
+            Screen::Cms => {
+                let cms = self.cms();
+                match target.field {
+                    1 => &cms.data_file,
+                    2 => &cms.recipient,
+                    3 => &cms.signer.cert_pem_file,
+                    4 => &cms.signer.private_key_pem_file,
+                    _ => "",
+                }
+            }
             Screen::Menu => "",
         }
     }
@@ -1027,10 +1126,10 @@ impl App {
         if self.screen == Screen::Menu {
             return;
         }
-        // The Cert screen has a three-way cycle (Menu → Entries → Form) so the
-        // multi-certificate sub-list is reachable; other screens toggle
-        // Menu ↔ Form.
-        self.focus = if self.screen == Screen::Cert {
+        // Entry-bearing screens (Cert / Csr / Cms) have a three-way cycle
+        // (Menu → Entries → Form) so the multi-entry sub-list is reachable;
+        // other screens (Crl) toggle Menu ↔ Form.
+        self.focus = if Self::screen_has_entries(self.screen) {
             match self.focus {
                 Focus::Menu => Focus::Entries,
                 Focus::Entries => Focus::Form,
@@ -1050,7 +1149,13 @@ impl App {
             return;
         }
         if self.focus == Focus::Entries {
-            self.cert_index = self.cert_index.saturating_sub(1);
+            // Move the active screen's entry index up (clamped at 0).
+            match self.screen {
+                Screen::Cert => self.cert_index = self.cert_index.saturating_sub(1),
+                Screen::Csr => self.csr_index = self.csr_index.saturating_sub(1),
+                Screen::Cms => self.cms_index = self.cms_index.saturating_sub(1),
+                _ => {}
+            }
             return;
         }
         // CRL revoked-table navigation (R3): while a revoked row is selected,
@@ -1083,9 +1188,27 @@ impl App {
             return;
         }
         if self.focus == Focus::Entries {
-            let last = self.cert_list.len().saturating_sub(1);
-            if self.cert_index < last {
-                self.cert_index += 1;
+            // Move the active screen's entry index down within its list length.
+            match self.screen {
+                Screen::Cert => {
+                    let last = self.cert_list.len().saturating_sub(1);
+                    if self.cert_index < last {
+                        self.cert_index += 1;
+                    }
+                }
+                Screen::Csr => {
+                    let last = self.csr_list.len().saturating_sub(1);
+                    if self.csr_index < last {
+                        self.csr_index += 1;
+                    }
+                }
+                Screen::Cms => {
+                    let last = self.cms_list.len().saturating_sub(1);
+                    if self.cms_index < last {
+                        self.cms_index += 1;
+                    }
+                }
+                _ => {}
             }
             return;
         }
@@ -1130,7 +1253,7 @@ impl App {
         }
         match self.screen {
             Screen::Cert => cycle_cert(self.cert_mut(), forward),
-            Screen::Csr => cycle_csr(&mut self.csr, forward),
+            Screen::Csr => cycle_csr(self.csr_mut(), forward),
             Screen::Crl => cycle_crl(&mut self.crl, forward),
             Screen::Cms => {}
             Screen::Menu => {}
@@ -1143,8 +1266,11 @@ impl App {
         }
         match self.screen {
             Screen::Cert => toggle_cert(self.cert_mut()),
-            Screen::Csr => toggle_csr(&mut self.csr),
-            Screen::Cms => self.cms.detached = !self.cms.detached,
+            Screen::Csr => toggle_csr(self.csr_mut()),
+            Screen::Cms => {
+                let cms = self.cms_mut();
+                cms.detached = !cms.detached;
+            }
             Screen::Crl | Screen::Menu => {}
         }
     }
@@ -1176,12 +1302,23 @@ impl App {
     }
 
     fn add_row(&mut self) {
+        // A compact per-screen match is used here (rather than the
+        // `screen_has_entries` predicate) because each arm selects a *different*
+        // list/index to mutate; the CRL arm is a separate revoked-row concern.
         match self.screen {
-            // Cert: append a new entry to the multi-certificate list and select
-            // it. The new entry becomes the one being edited.
+            // Cert/Csr/Cms: append a new entry to the active list and select it.
+            // The new entry becomes the one being edited.
             Screen::Cert => {
                 self.cert_list.push(CertForm::default());
                 self.cert_index = self.cert_list.len().saturating_sub(1);
+            }
+            Screen::Csr => {
+                self.csr_list.push(CsrForm::default());
+                self.csr_index = self.csr_list.len().saturating_sub(1);
+            }
+            Screen::Cms => {
+                self.cms_list.push(CmsForm::default());
+                self.cms_index = self.cms_list.len().saturating_sub(1);
             }
             Screen::Crl => {
                 self.crl.revoked.push(RevokedRow::default());
@@ -1192,6 +1329,9 @@ impl App {
     }
 
     fn delete_row(&mut self) {
+        // Compact per-screen match: each entry-bearing screen removes from its
+        // own list/index, never emptying it (mirrors the `len() > 1` guard); the
+        // CRL arm is the separate revoked-row concern.
         match self.screen {
             // Cert: remove the selected entry, but never empty the list.
             Screen::Cert => {
@@ -1199,6 +1339,20 @@ impl App {
                     let idx = self.active_cert_index();
                     self.cert_list.remove(idx);
                     self.cert_index = idx.min(self.cert_list.len().saturating_sub(1));
+                }
+            }
+            Screen::Csr => {
+                if self.csr_list.len() > 1 {
+                    let idx = self.active_csr_index();
+                    self.csr_list.remove(idx);
+                    self.csr_index = idx.min(self.csr_list.len().saturating_sub(1));
+                }
+            }
+            Screen::Cms => {
+                if self.cms_list.len() > 1 {
+                    let idx = self.active_cms_index();
+                    self.cms_list.remove(idx);
+                    self.cms_index = idx.min(self.cms_list.len().saturating_sub(1));
                 }
             }
             Screen::Crl => {
@@ -1223,27 +1377,40 @@ impl App {
     fn clear_form(&mut self) {
         match self.screen {
             Screen::Cert => *self.cert_mut() = CertForm::default(),
-            Screen::Csr => self.csr = CsrForm::default(),
+            Screen::Csr => *self.csr_mut() = CsrForm::default(),
             Screen::Crl => self.crl = CrlForm::default(),
-            Screen::Cms => self.cms = CmsForm::default(),
+            Screen::Cms => *self.cms_mut() = CmsForm::default(),
             Screen::Menu => {}
         }
         self.status = None;
         self.error = None;
     }
 
-    /// Wipes the active screen. On the Cert screen this replaces the whole
-    /// `cert_list` with a single default entry and resets `cert_index = 0`;
-    /// other screens are equivalent to [`App::clear_form`].
+    /// Wipes the active screen. On an entry-bearing screen (Cert / Csr / Cms)
+    /// this replaces the whole list with a single default entry and resets the
+    /// index to `0`; other screens are equivalent to [`App::clear_form`].
     fn clear_all(&mut self) {
-        if self.screen == Screen::Cert {
-            self.cert_list = vec![CertForm::default()];
-            self.cert_index = 0;
-            self.status = None;
-            self.error = None;
-        } else {
-            self.clear_form();
+        match self.screen {
+            Screen::Cert => {
+                self.cert_list = vec![CertForm::default()];
+                self.cert_index = 0;
+            }
+            Screen::Csr => {
+                self.csr_list = vec![CsrForm::default()];
+                self.csr_index = 0;
+            }
+            Screen::Cms => {
+                self.cms_list = vec![CmsForm::default()];
+                self.cms_index = 0;
+            }
+            // Crl / Menu have no entry list: reset the single form.
+            _ => {
+                self.clear_form();
+                return;
+            }
         }
+        self.status = None;
+        self.error = None;
     }
 
     /// Whether the currently focused form field is a free-text buffer (as
@@ -1265,12 +1432,12 @@ impl App {
         }
         match self.screen {
             Screen::Cert => cert_text_field(self.cert_mut()),
-            Screen::Csr => csr_text_field(&mut self.csr),
+            Screen::Csr => csr_text_field(self.csr_mut()),
             // While a revoked row is selected, focus is in the table (not on a
             // fixed text field), so typing/clear must not touch field 0..=2.
             Screen::Crl if self.crl.selected_row.is_some() => None,
             Screen::Crl => crl_text_field(&mut self.crl),
-            Screen::Cms => cms_text_field(&mut self.cms),
+            Screen::Cms => cms_text_field(self.cms_mut()),
             Screen::Menu => None,
         }
     }
@@ -1338,11 +1505,23 @@ impl App {
         self.focus = Focus::Form;
     }
 
-    /// Installs a freshly loaded CSR form, replacing `self.csr`. Switches to the
-    /// CSR screen and focuses the form. Called by the [`Effect::LoadConfig`]
-    /// handler in `mod.rs`.
-    pub fn load_csr(&mut self, form: CsrForm) {
-        self.csr = form;
+    /// Installs a freshly loaded set of CSR entries, replacing the whole
+    /// `csr_list`. Called by the [`Effect::LoadConfig`] handler in `mod.rs`
+    /// after reverse-mapping a CSR config (both generate-mode `csrs` and
+    /// sign-mode `to_sign`/`signing_requests`) into form structs. Resets
+    /// `csr_index` to `0`, switches to the CSR screen and focuses the form so
+    /// the user lands on the first loaded entry.
+    ///
+    /// Mirrors [`App::load_cert_list`]: the `csr_list` never-empty invariant is
+    /// preserved by replacing only with a non-empty vector. Defensive: a stray
+    /// empty vector is replaced with a single default entry.
+    pub fn load_csr_list(&mut self, forms: Vec<CsrForm>) {
+        self.csr_list = if forms.is_empty() {
+            vec![CsrForm::default()]
+        } else {
+            forms
+        };
+        self.csr_index = 0;
         self.screen = Screen::Csr;
         self.focus = Focus::Form;
     }
@@ -1361,11 +1540,22 @@ impl App {
         self.focus = Focus::Form;
     }
 
-    /// Installs a freshly loaded CMS form, replacing `self.cms`. Switches to the
-    /// CMS screen and focuses the form. Called by the [`Effect::LoadConfig`]
-    /// handler in `mod.rs`.
-    pub fn load_cms(&mut self, form: CmsForm) {
-        self.cms = form;
+    /// Installs a freshly loaded set of CMS entries, replacing the whole
+    /// `cms_list`. Called by the [`Effect::LoadConfig`] handler in `mod.rs`
+    /// after reverse-mapping a CMS config into form structs. Resets `cms_index`
+    /// to `0`, switches to the CMS screen and focuses the form so the user lands
+    /// on the first loaded entry.
+    ///
+    /// Mirrors [`App::load_cert_list`]: the `cms_list` never-empty invariant is
+    /// preserved by replacing only with a non-empty vector. Defensive: a stray
+    /// empty vector is replaced with a single default entry.
+    pub fn load_cms_list(&mut self, forms: Vec<CmsForm>) {
+        self.cms_list = if forms.is_empty() {
+            vec![CmsForm::default()]
+        } else {
+            forms
+        };
+        self.cms_index = 0;
         self.screen = Screen::Cms;
         self.focus = Focus::Form;
     }
@@ -1397,12 +1587,12 @@ impl App {
             // Csr path fields: 9 (`csr_pem_file`) plus the sign-mode signer
             // paths 13 (`signer.cert_pem_file`) and 14
             // (`signer.private_key_pem_file`), mirroring Cert's 12/13.
-            Screen::Csr => (self.csr.field, matches!(self.csr.field, 9 | 13 | 14)),
+            Screen::Csr => (self.csr().field, matches!(self.csr().field, 9 | 13 | 14)),
             // While a revoked row is selected, focus is in the table, not on a
             // fixed path field — no browseable path is focused.
             Screen::Crl if self.crl.selected_row.is_some() => return None,
             Screen::Crl => (self.crl.field, matches!(self.crl.field, 1 | 2)),
-            Screen::Cms => (self.cms.field, matches!(self.cms.field, 1..=4)),
+            Screen::Cms => (self.cms().field, matches!(self.cms().field, 1..=4)),
             Screen::Menu => return None,
         };
         if !is_path {
@@ -1767,11 +1957,11 @@ mod tests {
         let mut app = App::new("./out".to_string());
         app.screen = Screen::Csr;
         app.focus = Focus::Form;
-        app.csr.field = 6;
+        app.csr_mut().field = 6;
         app.update(Message::Right); // cursor -> 1
         app.update(Message::Toggle);
-        assert!(app.csr.usage[1]);
-        assert!(!app.csr.usage[0]);
+        assert!(app.csr().usage[1]);
+        assert!(!app.csr().usage[0]);
     }
 
     #[test]
@@ -1799,27 +1989,27 @@ mod tests {
     #[test]
     fn csr_field_13_routes_typed_chars_into_signer_cert_pem() {
         let mut app = csr_app();
-        app.csr.field = 13;
+        app.csr_mut().field = 13;
         app.update(Message::Char('c'));
         app.update(Message::Char('a'));
-        assert_eq!(app.csr.signer.cert_pem_file, "ca");
+        assert_eq!(app.csr().signer.cert_pem_file, "ca");
         assert!(
-            app.csr.signer.private_key_pem_file.is_empty(),
+            app.csr().signer.private_key_pem_file.is_empty(),
             "the key buffer must be untouched"
         );
         app.update(Message::Backspace);
-        assert_eq!(app.csr.signer.cert_pem_file, "c");
+        assert_eq!(app.csr().signer.cert_pem_file, "c");
     }
 
     #[test]
     fn csr_field_14_routes_typed_chars_into_signer_private_key_pem() {
         let mut app = csr_app();
-        app.csr.field = 14;
+        app.csr_mut().field = 14;
         app.update(Message::Char('k'));
         app.update(Message::Char('y'));
-        assert_eq!(app.csr.signer.private_key_pem_file, "ky");
+        assert_eq!(app.csr().signer.private_key_pem_file, "ky");
         assert!(
-            app.csr.signer.cert_pem_file.is_empty(),
+            app.csr().signer.cert_pem_file.is_empty(),
             "the cert buffer must be untouched"
         );
     }
@@ -1827,7 +2017,7 @@ mod tests {
     #[test]
     fn csr_signer_fields_are_browseable_path_targets() {
         let mut app = csr_app();
-        app.csr.field = 13;
+        app.csr_mut().field = 13;
         assert_eq!(
             app.focused_path_field(),
             Some(BrowseTarget {
@@ -1835,7 +2025,7 @@ mod tests {
                 field: 13,
             })
         );
-        app.csr.field = 14;
+        app.csr_mut().field = 14;
         assert_eq!(
             app.focused_path_field(),
             Some(BrowseTarget {
@@ -1844,7 +2034,7 @@ mod tests {
             })
         );
         // The original csr_pem_file path field is still browseable.
-        app.csr.field = 9;
+        app.csr_mut().field = 9;
         assert!(app.focused_path_field().is_some());
     }
 
@@ -1865,22 +2055,22 @@ mod tests {
             },
             "/tmp/ca.key".to_string(),
         );
-        assert_eq!(app.csr.signer.cert_pem_file, "/tmp/ca.pem");
-        assert_eq!(app.csr.signer.private_key_pem_file, "/tmp/ca.key");
+        assert_eq!(app.csr().signer.cert_pem_file, "/tmp/ca.pem");
+        assert_eq!(app.csr().signer.private_key_pem_file, "/tmp/ca.key");
     }
 
     #[test]
     fn csr_down_reaches_field_14() {
         let mut app = csr_app();
-        app.csr.field = 0;
+        app.csr_mut().field = 0;
         // 14 Downs from field 0 reach field 14 (0..=14 => 15 fields).
         for _ in 0..14 {
             app.update(Message::Down);
         }
-        assert_eq!(app.csr.field, 14, "active_field_count must allow 0..=14");
+        assert_eq!(app.csr().field, 14, "active_field_count must allow 0..=14");
         // Further Down is clamped at the last field.
         app.update(Message::Down);
-        assert_eq!(app.csr.field, 14);
+        assert_eq!(app.csr().field, 14);
     }
 
     // --- R3: CRL revoked-row navigation -----------------------------------
@@ -2080,9 +2270,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_on_non_cert_screen_skips_entries() {
+    fn tab_on_non_entry_screen_skips_entries() {
+        // CRL is the only screen without an entry sub-list: Tab toggles
+        // Menu ↔ Form, never landing on Focus::Entries.
         let mut app = App::new("./out".to_string());
-        app.screen = Screen::Csr;
+        app.screen = Screen::Crl;
         app.focus = Focus::Menu;
         app.update(Message::FocusNext);
         assert_eq!(app.focus, Focus::Form);
@@ -2182,19 +2374,20 @@ mod tests {
         let mut app = App::new("./out".to_string());
         app.screen = Screen::Csr;
         app.focus = Focus::Form;
-        app.csr.id = "req".to_string();
+        app.csr_mut().id = "req".to_string();
         app.update(Message::ClearForm);
-        assert_eq!(app.csr.id, "");
+        assert_eq!(app.csr().id, "");
     }
 
     #[test]
-    fn clear_all_on_non_cert_matches_clear_form() {
+    fn clear_all_on_crl_matches_clear_form() {
+        // CRL is the single-form screen: ClearAll falls back to clear_form.
         let mut app = App::new("./out".to_string());
-        app.screen = Screen::Cms;
+        app.screen = Screen::Crl;
         app.focus = Focus::Form;
-        app.cms.id = "msg".to_string();
+        app.crl.crl_file = "out.crl".to_string();
         app.update(Message::ClearAll);
-        assert_eq!(app.cms.id, "");
+        assert_eq!(app.crl.crl_file, "");
     }
 
     // --- status kind ------------------------------------------------------
@@ -2260,13 +2453,13 @@ mod tests {
         app.screen = Screen::Cms;
         app.focus = Focus::Form;
         for f in [1usize, 2, 3, 4] {
-            app.cms.field = f;
+            app.cms_mut().field = f;
             assert!(
                 app.focused_field_is_path(),
                 "cms field {f} should be a path"
             );
         }
-        app.cms.field = 0;
+        app.cms_mut().field = 0;
         assert!(!app.focused_field_is_path());
     }
 
@@ -2495,7 +2688,7 @@ mod tests {
             },
             "/d/data.bin".to_string(),
         );
-        assert_eq!(app.cms.data_file, "/d/data.bin");
+        assert_eq!(app.cms().data_file, "/d/data.bin");
     }
 
     // --- error popup ------------------------------------------------------
@@ -2741,15 +2934,41 @@ mod tests {
     }
 
     #[test]
-    fn load_csr_replaces_form_and_focuses_form() {
+    fn load_csr_list_replaces_list_and_resets_index() {
         let mut app = App::new("./out".to_string());
-        let form = CsrForm {
+        // Pre-existing multi-entry state with a stale index.
+        app.csr_list = vec![CsrForm::default(), CsrForm::default()];
+        app.csr_index = 1;
+        app.focus = Focus::Menu;
+
+        let generate = CsrForm {
             id: "req".to_string(),
+            sign_mode: false,
             ..CsrForm::default()
         };
-        app.load_csr(form);
-        assert_eq!(app.csr.id, "req");
+        let sign = CsrForm {
+            id: "sign".to_string(),
+            sign_mode: true,
+            ..CsrForm::default()
+        };
+        app.load_csr_list(vec![generate, sign]);
+
+        assert_eq!(app.csr_list.len(), 2);
+        assert_eq!(app.csr_list[0].id, "req");
+        assert!(!app.csr_list[0].sign_mode);
+        assert_eq!(app.csr_list[1].id, "sign");
+        assert!(app.csr_list[1].sign_mode, "sign_mode preserved per entry");
+        assert_eq!(app.csr_index, 0);
+        assert_eq!(app.screen, Screen::Csr);
         assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_csr_list_with_empty_keeps_one_default_entry() {
+        let mut app = App::new("./out".to_string());
+        app.load_csr_list(Vec::new());
+        assert_eq!(app.csr_list.len(), 1);
+        assert_eq!(app.csr_index, 0);
     }
 
     #[test]
@@ -2768,14 +2987,244 @@ mod tests {
     }
 
     #[test]
-    fn load_cms_replaces_form_and_focuses_form() {
+    fn load_cms_list_replaces_list_and_resets_index() {
         let mut app = App::new("./out".to_string());
-        let form = CmsForm {
-            id: "msg".to_string(),
+        // Pre-existing multi-entry state with a stale index.
+        app.cms_list = vec![CmsForm::default(), CmsForm::default()];
+        app.cms_index = 1;
+        app.focus = Focus::Menu;
+
+        let a = CmsForm {
+            id: "msg1".to_string(),
             ..CmsForm::default()
         };
-        app.load_cms(form);
-        assert_eq!(app.cms.id, "msg");
+        let b = CmsForm {
+            id: "msg2".to_string(),
+            ..CmsForm::default()
+        };
+        app.load_cms_list(vec![a, b]);
+
+        assert_eq!(app.cms_list.len(), 2);
+        assert_eq!(app.cms_list[0].id, "msg1");
+        assert_eq!(app.cms_list[1].id, "msg2");
+        assert_eq!(app.cms_index, 0);
+        assert_eq!(app.screen, Screen::Cms);
         assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_cms_list_with_empty_keeps_one_default_entry() {
+        let mut app = App::new("./out".to_string());
+        app.load_cms_list(Vec::new());
+        assert_eq!(app.cms_list.len(), 1);
+        assert_eq!(app.cms_index, 0);
+    }
+
+    // --- R1/R2: CSR & CMS multi-entry reducers ----------------------------
+
+    fn cms_app() -> App {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Cms;
+        app.focus = Focus::Form;
+        app
+    }
+
+    #[test]
+    fn new_app_seeds_exactly_one_csr_and_cms_entry() {
+        let app = App::new("./out".to_string());
+        assert_eq!(app.csr_list.len(), 1);
+        assert_eq!(app.csr_index, 0);
+        assert_eq!(app.cms_list.len(), 1);
+        assert_eq!(app.cms_index, 0);
+    }
+
+    #[test]
+    fn tab_on_csr_cycles_menu_entries_form() {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Csr;
+        app.focus = Focus::Menu;
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Entries);
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Form);
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Menu);
+    }
+
+    #[test]
+    fn tab_on_cms_cycles_menu_entries_form() {
+        let mut app = cms_app();
+        app.focus = Focus::Menu;
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Entries);
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Form);
+        app.update(Message::FocusNext);
+        assert_eq!(app.focus, Focus::Menu);
+    }
+
+    #[test]
+    fn add_row_on_csr_grows_list_and_selects_new_entry() {
+        let mut app = csr_app();
+        app.update(Message::AddRow);
+        assert_eq!(app.csr_list.len(), 2);
+        assert_eq!(app.csr_index, 1);
+        app.update(Message::AddRow);
+        assert_eq!(app.csr_list.len(), 3);
+        assert_eq!(app.csr_index, 2);
+    }
+
+    #[test]
+    fn add_row_on_cms_grows_list_and_selects_new_entry() {
+        let mut app = cms_app();
+        app.update(Message::AddRow);
+        assert_eq!(app.cms_list.len(), 2);
+        assert_eq!(app.cms_index, 1);
+    }
+
+    #[test]
+    fn delete_row_on_csr_never_empties_list() {
+        let mut app = csr_app();
+        app.update(Message::AddRow); // 2 entries, index 1
+        app.update(Message::DeleteRow);
+        assert_eq!(app.csr_list.len(), 1);
+        assert_eq!(app.csr_index, 0);
+        // Deleting the last remaining entry is a no-op.
+        app.update(Message::DeleteRow);
+        assert_eq!(app.csr_list.len(), 1);
+    }
+
+    #[test]
+    fn delete_row_on_cms_never_empties_list() {
+        let mut app = cms_app();
+        app.update(Message::AddRow); // 2 entries, index 1
+        app.update(Message::DeleteRow);
+        assert_eq!(app.cms_list.len(), 1);
+        assert_eq!(app.cms_index, 0);
+        app.update(Message::DeleteRow);
+        assert_eq!(app.cms_list.len(), 1);
+    }
+
+    #[test]
+    fn csr_entries_up_down_select_entry() {
+        let mut app = csr_app();
+        app.update(Message::AddRow);
+        app.update(Message::AddRow); // 3 entries, index 2
+        app.focus = Focus::Entries;
+        app.update(Message::Up);
+        assert_eq!(app.csr_index, 1);
+        app.update(Message::Up);
+        assert_eq!(app.csr_index, 0);
+        app.update(Message::Up); // clamps at 0
+        assert_eq!(app.csr_index, 0);
+        app.update(Message::Down);
+        assert_eq!(app.csr_index, 1);
+    }
+
+    #[test]
+    fn cms_entries_up_down_select_entry() {
+        let mut app = cms_app();
+        app.update(Message::AddRow);
+        app.update(Message::AddRow); // 3 entries, index 2
+        app.focus = Focus::Entries;
+        app.update(Message::Up);
+        assert_eq!(app.cms_index, 1);
+        app.update(Message::Down);
+        app.update(Message::Down); // clamps at last (2)
+        assert_eq!(app.cms_index, 2);
+        app.update(Message::Down);
+        assert_eq!(app.cms_index, 2);
+    }
+
+    #[test]
+    fn csr_typing_edits_the_selected_entry() {
+        let mut app = csr_app();
+        app.update(Message::AddRow); // index 1
+        app.csr_mut().field = 0;
+        app.update(Message::Char('x'));
+        assert_eq!(app.csr_list[1].id, "x");
+        assert_eq!(app.csr_list[0].id, "", "sibling entry untouched");
+        // Switch back to entry 0 and type into it.
+        app.csr_index = 0;
+        app.csr_mut().field = 1;
+        app.update(Message::Char('y'));
+        assert_eq!(app.csr_list[0].common_name, "y");
+        assert_eq!(app.csr_list[1].common_name, "");
+    }
+
+    #[test]
+    fn cms_typing_edits_the_selected_entry() {
+        let mut app = cms_app();
+        app.update(Message::AddRow); // index 1
+        app.cms_mut().field = 0;
+        app.update(Message::Char('x'));
+        assert_eq!(app.cms_list[1].id, "x");
+        assert_eq!(app.cms_list[0].id, "", "sibling entry untouched");
+        app.cms_index = 0;
+        app.cms_mut().field = 1;
+        app.update(Message::Char('d'));
+        assert_eq!(app.cms_list[0].data_file, "d");
+        assert_eq!(app.cms_list[1].data_file, "");
+    }
+
+    #[test]
+    fn csr_cycle_and_toggle_act_on_selected_entry() {
+        let mut app = csr_app();
+        app.update(Message::AddRow); // index 1
+        // sign_mode toggle is field 7.
+        app.csr_mut().field = 7;
+        app.update(Message::Toggle);
+        assert!(app.csr_list[1].sign_mode);
+        assert!(!app.csr_list[0].sign_mode, "sibling untouched");
+        // key_type cycler is field 4.
+        app.csr_mut().field = 4;
+        let start = app.csr().key_type;
+        app.update(Message::Right);
+        assert_ne!(app.csr_list[1].key_type, start);
+        assert_eq!(app.csr_list[0].key_type, 0, "sibling untouched");
+    }
+
+    #[test]
+    fn cms_detached_toggle_acts_on_selected_entry() {
+        let mut app = cms_app();
+        app.update(Message::AddRow); // index 1
+        app.update(Message::Toggle); // detached toggle (any field)
+        assert!(app.cms_list[1].detached);
+        assert!(!app.cms_list[0].detached, "sibling untouched");
+    }
+
+    #[test]
+    fn clear_form_resets_active_csr_entry_only() {
+        let mut app = csr_app();
+        app.csr_mut().id = "first".to_string();
+        app.update(Message::AddRow); // index 1
+        app.csr_mut().id = "second".to_string();
+        app.update(Message::ClearForm);
+        assert_eq!(app.csr_list[1].id, "");
+        assert_eq!(app.csr_list[0].id, "first");
+        assert_eq!(app.csr_list.len(), 2);
+    }
+
+    #[test]
+    fn clear_all_on_csr_collapses_to_single_default_entry() {
+        let mut app = csr_app();
+        app.csr_mut().id = "a".to_string();
+        app.update(Message::AddRow);
+        app.update(Message::AddRow);
+        app.update(Message::ClearAll);
+        assert_eq!(app.csr_list.len(), 1);
+        assert_eq!(app.csr_index, 0);
+        assert_eq!(app.csr_list[0].id, "");
+    }
+
+    #[test]
+    fn clear_all_on_cms_collapses_to_single_default_entry() {
+        let mut app = cms_app();
+        app.cms_mut().id = "a".to_string();
+        app.update(Message::AddRow);
+        app.update(Message::ClearAll);
+        assert_eq!(app.cms_list.len(), 1);
+        assert_eq!(app.cms_index, 0);
+        assert_eq!(app.cms_list[0].id, "");
     }
 }

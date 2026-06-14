@@ -2104,15 +2104,16 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Csr;
             app.focus = Focus::Form;
-            app.csr.id = "csr-x".to_string();
-            app.csr.common_name = "CN".to_string();
+            app.csr_mut().id = "csr-x".to_string();
+            app.csr_mut().common_name = "CN".to_string();
 
-            // Invoke: ClearAll on a single-form screen == ClearForm.
+            // Invoke: ClearAll on a single-entry CSR list collapses to one empty
+            // entry (== ClearForm when there is only one entry).
             app.update(Message::ClearAll);
 
-            // Expect: the single form is reset.
-            assert_eq!(app.csr.id, "");
-            assert_eq!(app.csr.common_name, "");
+            // Expect: the single entry is reset.
+            assert_eq!(app.csr().id, "");
+            assert_eq!(app.csr().common_name, "");
         }
 
         #[test]
@@ -2281,15 +2282,15 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
-            app.cms.field = 1; // data_file (text/path)
-            app.cms.data_file = "/tmp/x.bin".to_string();
+            app.cms_mut().field = 1; // data_file (text/path)
+            app.cms_mut().data_file = "/tmp/x.bin".to_string();
 
             // Invoke.
             let effect = app.update(Message::ClearField);
 
             // Expect: buffer emptied, no effect.
             assert_eq!(effect, None);
-            assert!(app.cms.data_file.is_empty());
+            assert!(app.cms().data_file.is_empty());
         }
 
         #[test]
@@ -2349,8 +2350,8 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
-            app.cms.field = 1;
-            app.cms.data_file = "/tmp/old".to_string();
+            app.cms_mut().field = 1;
+            app.cms_mut().data_file = "/tmp/old".to_string();
             app.set_browser_entries(
                 PathBuf::from("/tmp"),
                 vec![file("a.bin")],
@@ -2362,7 +2363,7 @@ mod reducer {
 
             // Expect: target cleared, browser closed.
             assert_eq!(effect, None);
-            assert!(app.cms.data_file.is_empty());
+            assert!(app.cms().data_file.is_empty());
             assert!(app.browser.is_none());
         }
 
@@ -2372,8 +2373,8 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
-            app.cms.field = 1;
-            app.cms.data_file = "/tmp/old".to_string();
+            app.cms_mut().field = 1;
+            app.cms_mut().data_file = "/tmp/old".to_string();
             app.set_browser_entries(
                 PathBuf::from("/tmp"),
                 vec![file("a.bin")],
@@ -2383,7 +2384,7 @@ mod reducer {
             let effect = app.update(Message::Char('c'));
 
             assert_eq!(effect, None);
-            assert!(app.cms.data_file.is_empty());
+            assert!(app.cms().data_file.is_empty());
             assert!(app.browser.is_none());
         }
 
@@ -2394,9 +2395,9 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
-            app.cms.data_file = "/tmp/data".to_string();
-            app.cms.recipient = "/tmp/rcpt.pem".to_string();
-            app.cms.field = 2; // recipient
+            app.cms_mut().data_file = "/tmp/data".to_string();
+            app.cms_mut().recipient = "/tmp/rcpt.pem".to_string();
+            app.cms_mut().field = 2; // recipient
             app.set_browser_entries(
                 PathBuf::from("/tmp"),
                 vec![file("rcpt.pem")],
@@ -2407,8 +2408,8 @@ mod reducer {
             app.update(Message::ClearField);
 
             // Expect: only the targeted recipient field is cleared.
-            assert!(app.cms.recipient.is_empty());
-            assert_eq!(app.cms.data_file, "/tmp/data");
+            assert!(app.cms().recipient.is_empty());
+            assert_eq!(app.cms().data_file, "/tmp/data");
             assert!(app.browser.is_none());
         }
 
@@ -2646,7 +2647,7 @@ mod reducer {
             let mut app = App::new("./out".to_string());
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
-            app.cms.field = 1; // data_file
+            app.cms_mut().field = 1; // data_file
             app.set_browser_entries(
                 PathBuf::from("/tmp/data"),
                 vec![dir_entry(".."), file_entry("msg.txt")],
@@ -2659,7 +2660,7 @@ mod reducer {
                 .join("msg.txt")
                 .to_string_lossy()
                 .into_owned();
-            assert_eq!(app.cms.data_file, expected);
+            assert_eq!(app.cms().data_file, expected);
             assert_eq!(app.browser, None);
         }
     }
@@ -3182,13 +3183,17 @@ mod load_reducer {
 
     #[test]
     fn load_csr_installs_form_and_focuses() {
+        // Single-entry load via the list API: one form is installed as the only
+        // entry, selected, and the screen/focus switch to the CSR form.
         let mut app = App::new("./out".to_string());
         let form = CsrForm {
             id: "req".to_string(),
             ..CsrForm::default()
         };
-        app.load_csr(form);
-        assert_eq!(app.csr.id, "req");
+        app.load_csr_list(vec![form]);
+        assert_eq!(app.csr_list.len(), 1);
+        assert_eq!(app.csr_index, 0);
+        assert_eq!(app.csr().id, "req");
         assert_eq!(app.screen, Screen::Csr);
         assert_eq!(app.focus, Focus::Form);
     }
@@ -3211,14 +3216,214 @@ mod load_reducer {
 
     #[test]
     fn load_cms_installs_form_and_focuses() {
+        // Single-entry load via the list API.
         let mut app = App::new("./out".to_string());
         let form = cert_bar::tui::app::CmsForm {
             id: "msg".to_string(),
             ..Default::default()
         };
-        app.load_cms(form);
-        assert_eq!(app.cms.id, "msg");
+        app.load_cms_list(vec![form]);
+        assert_eq!(app.cms_list.len(), 1);
+        assert_eq!(app.cms_index, 0);
+        assert_eq!(app.cms().id, "msg");
         assert_eq!(app.screen, Screen::Cms);
         assert_eq!(app.focus, Focus::Form);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group 7: multi-entry CMS & CSR (feature 07) — gated behind `tui`
+//
+// This is the headline bug for feature 07: a config with multiple CMS or CSR
+// entries used to keep only the FIRST and silently discard the rest. These
+// tests prove all entries survive end to end through the public boundary.
+//
+// `load_config_into_app` / `save_yaml` are PRIVATE to `src/tui/mod.rs` and are
+// covered by developer-02's in-crate `#[cfg(test)]` tests (which drive those
+// functions directly against the example fixtures and assert the pinned
+// "Loaded N …" status strings). Here we exercise the SAME multi-entry contract
+// at the integration boundary using only the public API:
+//
+//   read_*_config  ->  *_to_form / signing_request_to_form  ->  App::load_*_list
+//
+// for the load direction, and
+//
+//   App.*_list  ->  *_from_form  ->  write_*_config  ->  read_*_config
+//
+// for the generate/save round-trip — the same two-step the private helpers run
+// internally. We read the real `examples/test_cms.yaml` (5 entries) and
+// `examples/test_csr.yaml` (2 generate + 1 sign) so the integration tier
+// independently proves the bug is fixed against the bug-reproduction fixtures.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod multi_entry {
+    use cert_bar::config::{
+        Cms, CsrData, read_cms_config, read_csr_config, write_cms_config, write_csr_config,
+    };
+    use cert_bar::tui::app::{App, CmsForm, CsrForm, Focus, Screen};
+    use cert_bar::tui::convert::{
+        cms_from_form, cms_to_form, csr_from_form, csr_to_form, signing_request_to_form,
+    };
+
+    /// Reverse-maps a whole CSR config into the ordered form list exactly as
+    /// `load_config_into_app` does: every generate `csr` first (sign_mode=false),
+    /// then every `signing_request` (sign_mode=true), preserving file order.
+    fn csr_forms(data: &CsrData) -> Vec<CsrForm> {
+        let mut forms: Vec<CsrForm> = data.csrs.iter().map(csr_to_form).collect();
+        forms.extend(data.to_sign.iter().map(signing_request_to_form));
+        forms
+    }
+
+    /// Re-splits a `csr_list` back into a `CsrData` via the public single-entry
+    /// `csr_from_form`, mirroring the private `csrs_from_list`: generate-mode
+    /// forms append to `csrs`, sign-mode forms append to `to_sign`.
+    fn csrs_from_list(forms: &[CsrForm]) -> CsrData {
+        let mut out = CsrData {
+            csrs: Vec::new(),
+            to_sign: Vec::new(),
+        };
+        for form in forms {
+            let data = match csr_from_form(form) {
+                Ok(d) => d,
+                Err(e) => panic!("csr_from_form failed: {e}"),
+            };
+            out.csrs.extend(data.csrs);
+            out.to_sign.extend(data.to_sign);
+        }
+        out
+    }
+
+    /// Converts a whole `cms_list` via the public single-entry `cms_from_form`,
+    /// mirroring the private `cmss_from_list`.
+    fn cmss_from_list(forms: &[CmsForm]) -> Vec<Cms> {
+        forms
+            .iter()
+            .map(|f| cms_from_form(f).expect("cms_from_form"))
+            .collect()
+    }
+
+    // --- AC4: loading ALL entries ------------------------------------------
+
+    #[test]
+    fn loading_example_cms_config_installs_all_five_entries_in_order() {
+        // Setup: read the bug-reproduction fixture (5 CMS entries under `cmss:`).
+        let data = read_cms_config("examples/test_cms.yaml").unwrap();
+        assert_eq!(data.len(), 5, "fixture must hold 5 CMS entries");
+
+        // Invoke: reverse-map every entry and install the whole list.
+        let forms: Vec<CmsForm> = data.iter().map(cms_to_form).collect();
+        let mut app = App::new("./out".to_string());
+        app.load_cms_list(forms);
+
+        // Expect: ALL 5 land in cms_list, in order, with the right ids — not the
+        // old "keep only the first" behaviour. Screen/focus switch to CMS.
+        assert_eq!(app.cms_list.len(), 5, "all 5 CMS entries must install");
+        let ids: Vec<&str> = app.cms_list.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "cms_only",
+                "cms_signed",
+                "cms_signed_detached",
+                "clear_signed",
+                "clear_signed_detached",
+            ],
+            "ids must match the fixture order"
+        );
+        assert_eq!(app.cms_index, 0);
+        assert_eq!(app.screen, Screen::Cms);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn loading_example_csr_config_installs_all_three_with_sign_modes() {
+        // Setup: read the bug-reproduction fixture (2 `csrs` + 1
+        // `signing_requests` = 3 total).
+        let data = read_csr_config("examples/test_csr.yaml").unwrap();
+        assert_eq!(data.csrs.len(), 2, "fixture has 2 generate CSRs");
+        assert_eq!(data.to_sign.len(), 1, "fixture has 1 signing request");
+
+        // Invoke: build the combined ordered form list and install it.
+        let mut app = App::new("./out".to_string());
+        app.load_csr_list(csr_forms(&data));
+
+        // Expect: ALL 3 land in csr_list, in order, with the correct sign_mode per
+        // entry (2 generate then 1 sign) — the multi-entry + split-preservation
+        // contract.
+        assert_eq!(app.csr_list.len(), 3, "all 3 CSR entries must install");
+        assert!(!app.csr_list[0].sign_mode, "first csr is generate-mode");
+        assert!(!app.csr_list[1].sign_mode, "second csr is generate-mode");
+        assert!(app.csr_list[2].sign_mode, "third is a signing request");
+        assert_eq!(app.csr_list[0].id, "csr1");
+        assert_eq!(app.csr_list[1].id, "csr2");
+        assert_eq!(
+            app.csr_list[2].csr_pem_file, "./certs/csr1_csr.pem",
+            "the sign entry carries the CSR PEM path from the fixture"
+        );
+        assert_eq!(app.csr_index, 0);
+        assert_eq!(app.screen, Screen::Csr);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    // --- AC6: generate/save emits ALL entries ------------------------------
+
+    #[test]
+    fn cms_multi_entry_save_round_trip_emits_all_entries() {
+        // Setup: load all 5 example CMS entries into an App's cms_list.
+        let original = read_cms_config("examples/test_cms.yaml").unwrap();
+        let mut app = App::new("./out".to_string());
+        app.load_cms_list(original.iter().map(cms_to_form).collect());
+
+        // Invoke: convert the WHOLE list back to config and write+re-read it,
+        // mirroring what the private `save_yaml` does via `cmss_from_list`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cms_out.yaml");
+        write_cms_config(cmss_from_list(&app.cms_list), &path).unwrap();
+        let reread = read_cms_config(&path).unwrap();
+
+        // Expect: every entry is emitted, in order, with its id preserved.
+        assert_eq!(reread.len(), 5, "all 5 CMS entries must be written");
+        let ids: Vec<&str> = reread.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "cms_only",
+                "cms_signed",
+                "cms_signed_detached",
+                "clear_signed",
+                "clear_signed_detached",
+            ]
+        );
+        // The encrypt-only first entry keeps recipient/no-signer; a signed entry
+        // keeps its signer — proving per-entry shape survives, not just the count.
+        assert!(reread[0].signer.is_none(), "cms_only is encrypt-only");
+        assert!(reread[1].signer.is_some(), "cms_signed carries a signer");
+    }
+
+    #[test]
+    fn csr_multi_entry_save_round_trip_re_splits_by_sign_mode() {
+        // Setup: load all 3 example CSR entries (2 generate + 1 sign).
+        let data = read_csr_config("examples/test_csr.yaml").unwrap();
+        let mut app = App::new("./out".to_string());
+        app.load_csr_list(csr_forms(&data));
+
+        // Invoke: re-split the whole list back into a CsrData and write+re-read.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("csr_out.yaml");
+        write_csr_config(csrs_from_list(&app.csr_list), &path).unwrap();
+        let reread = read_csr_config(&path).unwrap();
+
+        // Expect: the original split is rebuilt — 2 generate `csrs` + 1 `to_sign`
+        // signing request — not a single surviving entry.
+        assert_eq!(reread.csrs.len(), 2, "both generate CSRs must be written");
+        assert_eq!(
+            reread.to_sign.len(),
+            1,
+            "the signing request must be written"
+        );
+        assert_eq!(reread.csrs[0].id, "csr1");
+        assert_eq!(reread.csrs[1].id, "csr2");
+        assert_eq!(reread.to_sign[0].csr_pem_file, "./certs/csr1_csr.pem");
     }
 }

@@ -499,9 +499,15 @@ fn generate_summary(app: &App, screen: Screen) -> String {
             let n = app.cert_list.len();
             format!("{n} certificate(s)")
         }
-        Screen::Csr => "CSR(s)".to_string(),
+        Screen::Csr => {
+            let n = app.csr_list.len();
+            format!("{n} CSR entry/entries")
+        }
         Screen::Crl => "CRL".to_string(),
-        Screen::Cms => "CMS message".to_string(),
+        Screen::Cms => {
+            let n = app.cms_list.len();
+            format!("{n} CMS message(s)")
+        }
         Screen::Menu => "nothing".to_string(),
     }
 }
@@ -598,21 +604,23 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
                     app.set_error_popup("CSR config has no entries");
                     return;
                 }
-                // Only the generate-mode entry carries a key length; sign-mode
-                // signing requests have none. Detect a coercion on the loaded
-                // generate csr (R2).
+                // Only generate-mode `csrs` carry a key length; sign-mode
+                // signing requests have none. Scan all generate-mode entries for
+                // an RSA length the {2048,4096} selector cannot represent before
+                // the forward mapper silently coerces it (R4/feature-06).
                 let coerced = data
                     .csrs
-                    .first()
-                    .and_then(|csr| convert::coerced_rsa_keylength(&csr.keytype, csr.keylength));
-                let form = if let Some(csr) = data.csrs.first() {
-                    convert::csr_to_form(csr)
-                } else {
-                    // `total > 0` and `csrs` is empty, so `to_sign` is non-empty.
-                    convert::signing_request_to_form(&data.to_sign[0])
-                };
-                app.load_csr(form);
-                let base = format!("Loaded 1 of {total} CSR entries from {path}");
+                    .iter()
+                    .find_map(|csr| convert::coerced_rsa_keylength(&csr.keytype, csr.keylength));
+                // Build the full ordered list: all generate-mode `csrs` (sign_mode
+                // = false) first, then all `to_sign`/signing_requests (sign_mode =
+                // true), matching the YAML file shape so the original split is
+                // recoverable on save.
+                let mut forms: Vec<app::CsrForm> = Vec::with_capacity(total);
+                forms.extend(data.csrs.iter().map(convert::csr_to_form));
+                forms.extend(data.to_sign.iter().map(convert::signing_request_to_form));
+                app.load_csr_list(forms);
+                let base = format!("Loaded {total} CSR entries from {path}");
                 app.set_success(with_rsa_coercion_warning(base, coerced));
             }
             Err(e) => app.set_error_popup(format!("Not a valid CSR config: {e}")),
@@ -633,9 +641,11 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
                     return;
                 }
                 let n = cmss.len();
-                let form = convert::cms_to_form(&cmss[0]);
-                app.load_cms(form);
-                app.set_success(format!("Loaded 1 of {n} CMS entries from {path}"));
+                // Map every CMS entry into a form, preserving order. CMS has no
+                // key length, so there is no coercion warning to fold in.
+                let forms: Vec<app::CmsForm> = cmss.iter().map(convert::cms_to_form).collect();
+                app.load_cms_list(forms);
+                app.set_success(format!("Loaded {n} CMS entries from {path}"));
             }
             Err(e) => app.set_error_popup(format!("Not a valid CMS config: {e}")),
         },
@@ -691,6 +701,63 @@ fn certs_from_list(app: &App) -> Result<Vec<crate::config::Certificate>, String>
     Ok(all_certs)
 }
 
+/// Converts every entry in `app.csr_list` and merges the per-entry results back
+/// into a single [`crate::config::CsrData`], rebuilding the original
+/// `csrs` / `to_sign` split by each form's `sign_mode`.
+///
+/// `convert::csr_from_form` returns a single-element `CsrData` keyed off
+/// `sign_mode` (sign-mode forms populate `to_sign`, generate-mode forms populate
+/// `csrs`), so merging just extends the accumulator's two vectors.
+///
+/// # Errors
+///
+/// Returns an error naming the offending entry (its `id`, or `entry N` when the
+/// id is blank) if any entry fails to convert, so the build stops with a pointed
+/// message rather than silently dropping a request.
+fn csrs_from_list(app: &App) -> Result<crate::config::CsrData, String> {
+    let mut data = crate::config::CsrData {
+        csrs: Vec::new(),
+        to_sign: Vec::new(),
+    };
+    for (n, form) in app.csr_list.iter().enumerate() {
+        let entry = convert::csr_from_form(form).map_err(|e| {
+            let label = if form.id.trim().is_empty() {
+                format!("entry {}", n + 1)
+            } else {
+                format!("'{}'", form.id.trim())
+            };
+            format!("csr {label}: {e}")
+        })?;
+        data.csrs.extend(entry.csrs);
+        data.to_sign.extend(entry.to_sign);
+    }
+    Ok(data)
+}
+
+/// Converts every entry in `app.cms_list` into a [`crate::config::Cms`],
+/// preserving order.
+///
+/// # Errors
+///
+/// Returns an error naming the offending entry (its `id`, or `entry N` when the
+/// id is blank) if any entry fails to convert, so the build stops with a pointed
+/// message rather than silently dropping a message.
+fn cmss_from_list(app: &App) -> Result<Vec<crate::config::Cms>, String> {
+    let mut all_cmss = Vec::with_capacity(app.cms_list.len());
+    for (n, form) in app.cms_list.iter().enumerate() {
+        let cms = convert::cms_from_form(form).map_err(|e| {
+            let label = if form.id.trim().is_empty() {
+                format!("entry {}", n + 1)
+            } else {
+                format!("'{}'", form.id.trim())
+            };
+            format!("cms {label}: {e}")
+        })?;
+        all_cmss.push(cms);
+    }
+    Ok(all_cmss)
+}
+
 /// Converts the active form to its config struct(s) and runs the matching
 /// generation pipeline.
 fn generate(app: &App, screen: Screen, output_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -700,7 +767,7 @@ fn generate(app: &App, screen: Screen, output_dir: &str) -> Result<(), Box<dyn s
             crate::certificate::create(all_certs, output_dir)?;
         }
         Screen::Csr => {
-            let data = convert::csr_from_form(&app.csr)?;
+            let data = csrs_from_list(app)?;
             crate::csr::create_csr(data.csrs, output_dir)?;
             crate::csr::sign_requests(data.to_sign, output_dir)?;
         }
@@ -709,8 +776,7 @@ fn generate(app: &App, screen: Screen, output_dir: &str) -> Result<(), Box<dyn s
             crate::crl::handle(crl, output_dir)?;
         }
         Screen::Cms => {
-            let cms = convert::cms_from_form(&app.cms)?;
-            crate::cms::handle(vec![cms], output_dir)?;
+            crate::cms::handle(cmss_from_list(app)?, output_dir)?;
         }
         Screen::Menu => {}
     }
@@ -726,16 +792,14 @@ fn save_yaml(app: &App, screen: Screen, path: &str) -> Result<(), Box<dyn std::e
             crate::config::write_certificate_config(all_certs, path)?;
         }
         Screen::Csr => {
-            let data = convert::csr_from_form(&app.csr)?;
-            crate::config::write_csr_config(data, path)?;
+            crate::config::write_csr_config(csrs_from_list(app)?, path)?;
         }
         Screen::Crl => {
             let crl = convert::crl_from_form(&app.crl)?;
             crate::config::write_crl_config(crl, path)?;
         }
         Screen::Cms => {
-            let cms = convert::cms_from_form(&app.cms)?;
-            crate::config::write_cms_config(vec![cms], path)?;
+            crate::config::write_cms_config(cmss_from_list(app)?, path)?;
         }
         Screen::Menu => {}
     }
@@ -1418,6 +1482,277 @@ mod tests {
         }
     }
 
+    #[allow(clippy::field_reassign_with_default)]
+    mod multientry_csr_cms {
+        use super::*;
+
+        /// A valid generate-mode CSR form with the given id/CN.
+        fn gen_csr(id: &str, cn: &str) -> app::CsrForm {
+            let mut form = app::CsrForm::default();
+            form.id = id.to_string();
+            form.common_name = cn.to_string();
+            form
+        }
+
+        /// A valid sign-mode CSR form (a signing request).
+        fn sign_csr() -> app::CsrForm {
+            let mut form = app::CsrForm::default();
+            form.sign_mode = true;
+            form.csr_pem_file = "req.pem".to_string();
+            form.signer.cert_pem_file = "ca.pem".to_string();
+            form.signer.private_key_pem_file = "ca.key".to_string();
+            form
+        }
+
+        /// A valid CMS form (recipient gives it an output mode).
+        fn cms_form(id: &str) -> app::CmsForm {
+            let mut form = app::CmsForm::default();
+            form.id = id.to_string();
+            form.data_file = "data.bin".to_string();
+            form.recipient = "rcpt.pem".to_string();
+            form
+        }
+
+        #[test]
+        fn csrs_from_list_re_splits_by_sign_mode_preserving_order() {
+            // Setup: two generate-mode entries then one sign-mode entry.
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Csr;
+            app.load_csr_list(vec![
+                gen_csr("web", "web.example"),
+                gen_csr("api", "api.example"),
+                sign_csr(),
+            ]);
+
+            // Invoke
+            let data = csrs_from_list(&app).expect("all entries convert");
+
+            // Expect: the original csrs / to_sign split is rebuilt.
+            assert_eq!(data.csrs.len(), 2, "two generate-mode entries -> csrs");
+            assert_eq!(data.to_sign.len(), 1, "one sign-mode entry -> to_sign");
+            assert_eq!(data.csrs[0].id, "web");
+            assert_eq!(data.csrs[1].id, "api");
+        }
+
+        #[test]
+        fn csrs_from_list_names_offending_entry() {
+            // Setup: a valid first entry and a blank-id sign-mode entry missing
+            // its required csr pem file.
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Csr;
+            let mut bad = app::CsrForm::default();
+            bad.sign_mode = true; // missing csr_pem_file / signer -> error
+            app.load_csr_list(vec![gen_csr("web", "web.example"), bad]);
+
+            // Invoke. `CsrData` is not `Debug`, so match instead of `unwrap_err`.
+            let err = match csrs_from_list(&app) {
+                Ok(_) => panic!("expected a per-entry conversion error"),
+                Err(e) => e,
+            };
+
+            // Expect: the blank-id entry is named by position.
+            assert!(
+                err.contains("csr entry 2"),
+                "blank-id entry should be named by position, got: {err}"
+            );
+        }
+
+        #[test]
+        fn cmss_from_list_converts_every_entry_in_order() {
+            // Setup: three valid CMS entries.
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Cms;
+            app.load_cms_list(vec![cms_form("a"), cms_form("b"), cms_form("c")]);
+
+            // Invoke
+            let cmss = cmss_from_list(&app).expect("all entries convert");
+
+            // Expect: every entry converted, order preserved.
+            assert_eq!(cmss.len(), 3);
+            assert_eq!(cmss[0].id, "a");
+            assert_eq!(cmss[2].id, "c");
+        }
+
+        #[test]
+        fn cmss_from_list_names_offending_entry() {
+            // Setup: a valid entry then a blank-id entry missing its data file.
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Cms;
+            let bad = app::CmsForm::default(); // blank -> conversion error
+            app.load_cms_list(vec![cms_form("a"), bad]);
+
+            // Invoke
+            let err = cmss_from_list(&app).unwrap_err();
+
+            // Expect: the blank-id entry is named by position.
+            assert!(
+                err.contains("cms entry 2"),
+                "blank-id entry should be named by position, got: {err}"
+            );
+        }
+
+        #[test]
+        fn save_yaml_csr_round_trips_all_entries() {
+            // Setup: a multi-entry csr_list (generate + generate + sign).
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("csr.yaml");
+            let path = yaml.to_string_lossy().into_owned();
+
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Csr;
+            app.load_csr_list(vec![
+                gen_csr("web", "web.example"),
+                gen_csr("api", "api.example"),
+                sign_csr(),
+            ]);
+
+            // Invoke: save then re-read the YAML.
+            save_yaml(&app, Screen::Csr, &path).expect("save all csr entries");
+            let data = crate::config::read_csr_config(&path).expect("re-read");
+
+            // Expect: the split is preserved across the round-trip.
+            assert_eq!(data.csrs.len(), 2);
+            assert_eq!(data.to_sign.len(), 1);
+        }
+
+        #[test]
+        fn save_yaml_cms_round_trips_all_entries() {
+            // Setup: a three-entry cms_list.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("cms.yaml");
+            let path = yaml.to_string_lossy().into_owned();
+
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Cms;
+            app.load_cms_list(vec![cms_form("a"), cms_form("b"), cms_form("c")]);
+
+            // Invoke: save then re-read.
+            save_yaml(&app, Screen::Cms, &path).expect("save all cms entries");
+            let cmss = crate::config::read_cms_config(&path).expect("re-read");
+
+            // Expect: all three entries survive the round-trip in order.
+            assert_eq!(cmss.len(), 3);
+            assert_eq!(cmss[0].id, "a");
+            assert_eq!(cmss[2].id, "c");
+        }
+
+        #[test]
+        fn example_test_cms_loads_all_five_entries() {
+            // The bug-reproduction fixture: 5 CMS entries under `cmss:`.
+            let mut app = App::new("./out".to_string());
+            load_config_into_app(&mut app, Screen::Cms, "examples/test_cms.yaml");
+
+            assert!(
+                app.error_popup.is_none(),
+                "example_test_cms should load cleanly, popup: {:?}",
+                app.error_popup
+            );
+            assert_eq!(app.cms_list.len(), 5, "all 5 CMS entries should load");
+            let status = app.status.as_deref().expect("success status");
+            assert!(
+                status.contains("Loaded 5 CMS entries"),
+                "status should report 5 entries, got: {status}"
+            );
+        }
+
+        #[test]
+        fn example_test_csr_loads_all_three_entries() {
+            // The bug-reproduction fixture: 2 csrs + 1 signing_request.
+            let mut app = App::new("./out".to_string());
+            load_config_into_app(&mut app, Screen::Csr, "examples/test_csr.yaml");
+
+            assert!(
+                app.error_popup.is_none(),
+                "example_test_csr should load cleanly, popup: {:?}",
+                app.error_popup
+            );
+            assert_eq!(app.csr_list.len(), 3, "all 3 CSR entries should load");
+            assert!(!app.csr_list[0].sign_mode, "first is generate");
+            assert!(!app.csr_list[1].sign_mode, "second is generate");
+            assert!(app.csr_list[2].sign_mode, "third is a signing request");
+            let status = app.status.as_deref().expect("success status");
+            assert!(
+                status.contains("Loaded 3 CSR entries"),
+                "status should report 3 entries, got: {status}"
+            );
+        }
+    }
+
+    // End-to-end regression coverage for the CSR `generate` path: a loaded
+    // config that mixes generate-mode `csrs` with sign-mode `signing_requests`
+    // must produce BOTH the `*_csr.pem` files AND the signed `*_cert.pem` from
+    // the signing request — and a failing signing request must surface as an
+    // error rather than a silent partial success (feature 08, R1 + R3).
+    #[allow(clippy::field_reassign_with_default)]
+    mod csr_generate_sign {
+        use super::*;
+
+        #[test]
+        fn generate_csr_writes_both_csrs_and_signed_cert() {
+            // Setup: load the bug-reproduction fixture (2 generate-mode CSRs +
+            // 1 signing request that signs ./certs/csr1_csr.pem) through the
+            // exact load path the app uses.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let mut app = App::new(tmp.path().to_string_lossy().into_owned());
+            app.screen = Screen::Csr;
+            load_config_into_app(&mut app, Screen::Csr, "examples/test_csr.yaml");
+            assert!(
+                app.error_popup.is_none(),
+                "fixture should load cleanly, popup: {:?}",
+                app.error_popup
+            );
+            assert_eq!(app.csr_list.len(), 3, "2 csrs + 1 signing request");
+
+            // Invoke: run the private generate path into the temp output dir.
+            let dir = tmp.path().to_string_lossy().into_owned();
+            generate(&app, Screen::Csr, &dir).expect("generate csrs and signed cert");
+
+            // Expect: the generate-mode CSRs are written...
+            assert!(
+                tmp.path().join("csr1_csr.pem").exists(),
+                "generate-mode csr1 should be written"
+            );
+            assert!(
+                tmp.path().join("csr2_csr.pem").exists(),
+                "generate-mode csr2 should be written"
+            );
+            // ...AND the signed certificate from the signing request. The
+            // filename derives from the referenced CSR's stem (csr1_csr) plus
+            // the `_cert.pem` suffix the signer appends.
+            assert!(
+                tmp.path().join("csr1_csr_cert.pem").exists(),
+                "signed certificate from the signing_requests entry should be written"
+            );
+        }
+
+        #[test]
+        fn generate_csr_propagates_signing_failure() {
+            // Setup: a single sign-mode entry whose referenced CSR file does not
+            // exist. The generate path must not report success when the signing
+            // step fails (R3) — the `?` on `sign_requests` must surface the error.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let mut app = App::new(tmp.path().to_string_lossy().into_owned());
+            app.screen = Screen::Csr;
+
+            let mut form = app::CsrForm::default();
+            form.sign_mode = true;
+            form.csr_pem_file = tmp
+                .path()
+                .join("does_not_exist_csr.pem")
+                .to_string_lossy()
+                .into_owned();
+            form.signer.cert_pem_file = "examples/maincadoc_cert.pem".to_string();
+            form.signer.private_key_pem_file = "examples/maincadoc_pkey.pem".to_string();
+            app.load_csr_list(vec![form]);
+
+            // Invoke + expect: generate returns Err rather than silently
+            // producing nothing while reporting success.
+            let dir = tmp.path().to_string_lossy().into_owned();
+            generate(&app, Screen::Csr, &dir)
+                .expect_err("missing referenced CSR file must make generate fail");
+        }
+    }
+
     mod read_dir_effect {
         use super::*;
 
@@ -1840,17 +2175,20 @@ mod tests {
         }
 
         #[test]
-        fn csr_with_csr_and_signing_request_loads_first_csr_in_generate_mode() {
-            // Setup: a CSR config holding one generate csr AND one signing request.
+        fn csr_with_csrs_and_signing_requests_loads_all_in_order() {
+            // Setup: a CSR config holding two generate csrs AND one signing
+            // request, mirroring `examples/test_csr.yaml`'s shape.
             let tmp = tempfile::tempdir().expect("temp dir");
             let yaml = tmp.path().join("csr.yaml");
 
-            let mut gen_form = app::CsrForm::default();
-            gen_form.id = "web".to_string();
-            gen_form.common_name = "web.example".to_string();
-            let csr = convert::csr_from_form(&gen_form)
-                .expect("gen csr maps")
-                .csrs;
+            let mut gen1 = app::CsrForm::default();
+            gen1.id = "web".to_string();
+            gen1.common_name = "web.example".to_string();
+            let mut gen2 = app::CsrForm::default();
+            gen2.id = "api".to_string();
+            gen2.common_name = "api.example".to_string();
+            let mut csrs = convert::csr_from_form(&gen1).expect("gen1 maps").csrs;
+            csrs.extend(convert::csr_from_form(&gen2).expect("gen2 maps").csrs);
 
             let mut sign = app::CsrForm::default();
             sign.sign_mode = true;
@@ -1859,7 +2197,7 @@ mod tests {
             sign.signer.private_key_pem_file = "ca.key".to_string();
             let to_sign = convert::csr_from_form(&sign).expect("sign maps").to_sign;
 
-            config::write_csr_config(config::CsrData { csrs: csr, to_sign }, &yaml).expect("write");
+            config::write_csr_config(config::CsrData { csrs, to_sign }, &yaml).expect("write");
 
             let mut app = App::new("./out".to_string());
             let path = yaml.to_string_lossy().into_owned();
@@ -1867,17 +2205,28 @@ mod tests {
             // Invoke
             load_config_into_app(&mut app, Screen::Csr, &path);
 
-            // Expect: the first csr loaded in generate mode; status reports 1 of 2.
+            // Expect: all three loaded in file order — two generate, then one
+            // sign — with the count in the status.
             assert!(app.error_popup.is_none());
-            assert!(!app.csr.sign_mode, "the generate csr is preferred");
-            assert_eq!(app.csr.id, "web");
+            assert_eq!(app.csr_list.len(), 3, "every entry is loaded");
+            assert!(!app.csr_list[0].sign_mode, "first is generate");
+            assert!(!app.csr_list[1].sign_mode, "second is generate");
+            assert!(
+                app.csr_list[2].sign_mode,
+                "signing request loads in sign mode"
+            );
+            assert_eq!(app.csr_list[0].id, "web");
+            assert_eq!(app.csr_list[1].id, "api");
+            assert_eq!(app.csr_list[2].csr_pem_file, "req.pem");
+            assert_eq!(app.csr_index, 0);
             assert_eq!(app.screen, Screen::Csr);
+            assert_eq!(app.focus, Focus::Form);
             let status = app.status.as_deref().expect("success status");
-            assert_eq!(status, &format!("Loaded 1 of 2 CSR entries from {path}"));
+            assert_eq!(status, &format!("Loaded 3 CSR entries from {path}"));
         }
 
         #[test]
-        fn csr_with_only_signing_requests_loads_sign_mode() {
+        fn csr_with_only_signing_requests_loads_all_sign_mode() {
             // Setup: a CSR config holding only a signing request.
             let tmp = tempfile::tempdir().expect("temp dir");
             let yaml = tmp.path().join("sign.yaml");
@@ -1904,12 +2253,16 @@ mod tests {
             // Invoke
             load_config_into_app(&mut app, Screen::Csr, &path);
 
-            // Expect: the form is in sign mode.
+            // Expect: the single entry is in sign mode.
             assert!(app.error_popup.is_none());
-            assert!(app.csr.sign_mode, "only signing requests -> sign mode");
-            assert_eq!(app.csr.csr_pem_file, "req.pem");
+            assert_eq!(app.csr_list.len(), 1);
+            assert!(
+                app.csr_list[0].sign_mode,
+                "only signing requests -> sign mode"
+            );
+            assert_eq!(app.csr_list[0].csr_pem_file, "req.pem");
             let status = app.status.as_deref().expect("success status");
-            assert_eq!(status, &format!("Loaded 1 of 1 CSR entries from {path}"));
+            assert_eq!(status, &format!("Loaded 1 CSR entries from {path}"));
         }
 
         #[test]
@@ -1944,20 +2297,22 @@ mod tests {
         }
 
         #[test]
-        fn cms_loads_first_entry_with_count() {
-            // Setup: a CMS config with one entry.
+        fn cms_loads_all_entries_with_count() {
+            // Setup: a CMS config with three entries.
             let tmp = tempfile::tempdir().expect("temp dir");
             let yaml = tmp.path().join("cms.yaml");
 
-            let mut form = app::CmsForm::default();
-            form.id = "msg".to_string();
-            form.data_file = "data.bin".to_string();
-            // A CMS entry now needs at least one output mode (R4); give it a
-            // recipient so the fixture is valid without changing the test's
-            // intent (loading the first entry and reporting the count).
-            form.recipient = "rcpt.pem".to_string();
-            let cms = convert::cms_from_form(&form).expect("cms maps");
-            config::write_cms_config(vec![cms], &yaml).expect("write");
+            let mut cmss = Vec::new();
+            for id in ["msg1", "msg2", "msg3"] {
+                let mut form = app::CmsForm::default();
+                form.id = id.to_string();
+                form.data_file = "data.bin".to_string();
+                // A CMS entry needs at least one output mode (R4); a recipient
+                // keeps each fixture valid.
+                form.recipient = "rcpt.pem".to_string();
+                cmss.push(convert::cms_from_form(&form).expect("cms maps"));
+            }
+            config::write_cms_config(cmss, &yaml).expect("write");
 
             let mut app = App::new("./out".to_string());
             let path = yaml.to_string_lossy().into_owned();
@@ -1965,12 +2320,17 @@ mod tests {
             // Invoke
             load_config_into_app(&mut app, Screen::Cms, &path);
 
-            // Expect
+            // Expect: all entries loaded in order with the count in the status.
             assert!(app.error_popup.is_none());
             assert_eq!(app.screen, Screen::Cms);
-            assert_eq!(app.cms.id, "msg");
+            assert_eq!(app.cms_list.len(), 3, "every entry is loaded");
+            assert_eq!(app.cms_list[0].id, "msg1");
+            assert_eq!(app.cms_list[1].id, "msg2");
+            assert_eq!(app.cms_list[2].id, "msg3");
+            assert_eq!(app.cms_index, 0);
+            assert_eq!(app.focus, Focus::Form);
             let status = app.status.as_deref().expect("success status");
-            assert_eq!(status, &format!("Loaded 1 of 1 CMS entries from {path}"));
+            assert_eq!(status, &format!("Loaded 3 CMS entries from {path}"));
         }
 
         #[test]
@@ -2124,7 +2484,7 @@ mod tests {
             assert!(app.error_popup.is_none());
             let status = app.status.as_deref().expect("success status set");
             assert!(
-                status.starts_with(&format!("Loaded 1 of 1 CSR entries from {path}")),
+                status.starts_with(&format!("Loaded 1 CSR entries from {path}")),
                 "the load-succeeded text is preserved, got: {status}"
             );
             assert!(

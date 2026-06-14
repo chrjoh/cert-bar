@@ -22,20 +22,118 @@
 //! | 14  | signer key pem   | text input (sign mode, path)    |
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
 
 use super::widgets::{
     cycler_row, header, multiselect_rows, note_row, optional_text_row, render_form, text_row,
     toggle_row,
 };
 use crate::tui::app::{
-    App, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
+    App, CsrForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
 };
 use crate::tui::theme::Theme;
 
-/// Renders the CSR form into `area`.
+/// Maximum number of rows the CSR sub-list grows to before scrolling; the form
+/// keeps the rest (the sub-list shrinks first on short terminals).
+const ENTRIES_MAX_ROWS: u16 = 6;
+/// Minimum rows the sub-list aims for (plus its top/bottom border).
+const ENTRIES_MIN_ROWS: u16 = 1;
+
+/// Renders the CSR screen into `area`: a CSR sub-list on top, the form for the
+/// active entry (`form`) below.
+///
+/// `form` is the active entry resolved by the caller (`app.csr()`);
+/// `app.csr_list` / `app.csr_index` drive the sub-list. The sub-list takes a
+/// small `Length` (capped at [`ENTRIES_MAX_ROWS`] content rows) that shrinks
+/// before the form on short terminals; the form takes the remaining `Min(0)`
+/// and keeps its existing scroll behavior. Mirrors `cert.rs::render`.
 pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &Theme) {
+    // Sub-list height: one row per entry (capped), plus the two border rows,
+    // but never so tall it would crowd out the form on a short pane.
+    let count = app.csr_list.len() as u16;
+    let wanted_rows = count.clamp(ENTRIES_MIN_ROWS, ENTRIES_MAX_ROWS);
+    // Leave at least 3 rows for the form block; the sub-list shrinks first.
+    let max_list_height = area.height.saturating_sub(3);
+    let list_height = (wanted_rows + 2).min(max_list_height);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(list_height), Constraint::Min(0)])
+        .split(area);
+
+    render_entries(frame, chunks[0], app, theme);
+    render_form_pane(frame, chunks[1], form, app, theme);
+}
+
+/// Renders the CSR sub-list (entry ids + a sign/generate indicator). Mirrors
+/// `cert.rs::render_entries`.
+fn render_entries(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    if area.height < 2 {
+        return;
+    }
+    let focused = app.focus == Focus::Entries;
+    let (border_type, border_style) = if focused {
+        (BorderType::Thick, theme.focused_border())
+    } else {
+        (BorderType::Plain, theme.border())
+    };
+
+    let title = format!(" CSR ({}) — a add · d delete ", app.csr_list.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(border_style)
+        .title(Line::from(title).style(theme.title()))
+        .style(theme.base());
+
+    let items: Vec<ListItem> = app
+        .csr_list
+        .iter()
+        .map(|c| ListItem::new(Line::from(entry_label(c))))
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .style(theme.base())
+        .highlight_style(theme.selected())
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    let idx = app.csr_index.min(app.csr_list.len().saturating_sub(1));
+    state.select(Some(idx));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// One sub-list row: a label for the entry plus a kind indicator. Generate-mode
+/// entries (`csrs`) read their id; sign-mode entries (`signing_request`s) carry
+/// no id, so fall back to the `csr_pem_file` stem. Either way the kind is shown
+/// as `(sign)` or `(generate)` so it is always visible.
+fn entry_label(c: &CsrForm) -> String {
+    let label = if !c.id.is_empty() {
+        c.id.clone()
+    } else if c.sign_mode && !c.csr_pem_file.is_empty() {
+        std::path::Path::new(&c.csr_pem_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(unnamed)")
+            .to_string()
+    } else {
+        "(unnamed)".to_string()
+    };
+    let kind = if c.sign_mode {
+        " (sign)"
+    } else {
+        " (generate)"
+    };
+    format!("{label}{kind}")
+}
+
+/// Renders the form for the active entry into `area`, with an `editing i/N`
+/// title and the browse hint on focused path rows. Mirrors
+/// `cert.rs::render_form_pane`.
+fn render_form_pane(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &Theme) {
     let f = form.field;
     let selected_key = &KEY_TYPE_OPTIONS[form.key_type % KEY_TYPE_OPTIONS.len()];
     let key_type = format!("{selected_key:?}");
@@ -136,7 +234,10 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &
         _ => after_usage + 9,  // field 14 (signer key pem)
     };
 
-    render_form(frame, area, "CSR", lines, active_line, app, theme);
+    let total = app.csr_list.len();
+    let current = app.csr_index.min(total.saturating_sub(1)) + 1;
+    let title = format!("CSR — editing {current}/{total}");
+    render_form(frame, area, &title, lines, active_line, app, theme);
 }
 
 /// A path-input row: an [`optional_text_row`] with a right-side muted
@@ -166,7 +267,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).expect("backend");
         terminal
-            .draw(|frame| render(frame, frame.area(), &app.csr, app, &theme))
+            .draw(|frame| render(frame, frame.area(), app.csr(), app, &theme))
             .expect("draw");
         terminal
             .backend()
@@ -196,7 +297,7 @@ mod tests {
     #[test]
     fn shows_typed_csr_pem_path() {
         let mut app = csr_app();
-        app.csr.csr_pem_file = "req.pem".to_string();
+        app.csr_mut().csr_pem_file = "req.pem".to_string();
         let out = render_to_string(&app);
         assert!(out.contains("req.pem"));
     }
@@ -220,7 +321,7 @@ mod tests {
     #[test]
     fn shows_typed_signer_key_value() {
         let mut app = csr_app();
-        app.csr.signer.private_key_pem_file = "ca.key".to_string();
+        app.csr_mut().signer.private_key_pem_file = "ca.key".to_string();
         let out = render_sized(&app, 60, 40);
         assert!(
             out.contains("ca.key"),
@@ -231,7 +332,7 @@ mod tests {
     #[test]
     fn browse_hint_shows_on_focused_signer_key_field() {
         let mut app = csr_app();
-        app.csr.field = 14; // signer key pem (path)
+        app.csr_mut().field = 14; // signer key pem (path)
         let out = render_sized(&app, 60, 40);
         assert!(
             out.contains("Ctrl+O"),
@@ -242,11 +343,95 @@ mod tests {
     #[test]
     fn browse_hint_absent_on_non_path_field() {
         let mut app = csr_app();
-        app.csr.field = 0; // id (not a path)
+        app.csr_mut().field = 0; // id (not a path)
         let out = render_sized(&app, 60, 40);
         assert!(
             !out.contains("Ctrl+O"),
             "non-path rows do not show the browse hint"
         );
+    }
+
+    #[test]
+    fn entries_sublist_shows_labels_and_count() {
+        let mut app = csr_app();
+        app.csr_mut().id = "csr1".to_string();
+        app.update(crate::tui::app::Message::AddRow); // index 1
+        app.csr_mut().id = "csr2".to_string();
+        let out = render_to_string(&app);
+        assert!(out.contains("CSR (2)"), "shows the entry count");
+        assert!(out.contains("csr1"), "shows the first entry id");
+        assert!(out.contains("csr2"), "shows the second entry id");
+        assert!(out.contains("> "), "shows the selection marker");
+        assert!(out.contains("a add"), "shows the add/delete hint");
+    }
+
+    #[test]
+    fn generate_entry_shows_generate_indicator() {
+        let mut app = csr_app();
+        app.csr_mut().id = "csr1".to_string();
+        app.csr_mut().sign_mode = false;
+        let out = render_to_string(&app);
+        assert!(
+            out.contains("csr1 (generate)"),
+            "a generate-mode entry shows the (generate) indicator"
+        );
+    }
+
+    #[test]
+    fn sign_mode_entry_shows_sign_indicator() {
+        let mut app = csr_app();
+        app.csr_mut().id = "tosign".to_string();
+        app.csr_mut().sign_mode = true;
+        let out = render_to_string(&app);
+        assert!(
+            out.contains("tosign (sign)"),
+            "a sign-mode entry shows the (sign) indicator"
+        );
+    }
+
+    #[test]
+    fn sign_mode_entry_without_id_falls_back_to_pem_stem() {
+        let mut app = csr_app();
+        app.csr_mut().id = String::new();
+        app.csr_mut().sign_mode = true;
+        app.csr_mut().csr_pem_file = "/tmp/req.pem".to_string();
+        let out = render_to_string(&app);
+        assert!(
+            out.contains("req (sign)"),
+            "a sign-mode entry with no id labels from the csr_pem_file stem"
+        );
+    }
+
+    #[test]
+    fn unnamed_entry_renders_placeholder() {
+        let app = csr_app();
+        let out = render_to_string(&app);
+        assert!(
+            out.contains("(unnamed) (generate)"),
+            "an entry with an empty id shows the placeholder"
+        );
+    }
+
+    #[test]
+    fn editing_header_shows_index_over_total() {
+        let mut app = csr_app();
+        app.update(crate::tui::app::Message::AddRow); // 2 entries, index 1
+        app.csr_index = 0;
+        let out = render_to_string(&app);
+        assert!(
+            out.contains("editing 1/2"),
+            "form title shows 1-based editing i/N"
+        );
+    }
+
+    #[test]
+    fn degenerate_area_does_not_panic() {
+        let app = csr_app();
+        let theme = Theme::dark();
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        terminal
+            .draw(|frame| render(frame, frame.area(), app.csr(), &app, &theme))
+            .expect("draw");
     }
 }
