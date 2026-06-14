@@ -27,7 +27,9 @@ use super::widgets::{
     cycler_row, header, multiselect_rows, note_row, optional_text_row, render_form, text_row,
     toggle_row,
 };
-use crate::tui::app::{App, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, USAGE_OPTIONS};
+use crate::tui::app::{
+    App, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
+};
 use crate::tui::theme::Theme;
 
 /// Renders the CSR form into `area`.
@@ -55,6 +57,19 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &
         )
     };
 
+    // `key length` is a fixed-option cycler for RSA only; not applicable otherwise.
+    let key_length_row = if selected_key.uses_rsa_key_length() {
+        let bits = RSA_KEY_LENGTH_OPTIONS[form.key_length % RSA_KEY_LENGTH_OPTIONS.len()];
+        cycler_row("key length", &bits.to_string(), f == 12, theme)
+    } else {
+        note_row(
+            "key length",
+            &format!("n/a — not used for {key_type} keys"),
+            f == 12,
+            theme,
+        )
+    };
+
     let mut lines: Vec<Line<'static>> = vec![
         text_row("id", &form.id, f == 0, theme),
         text_row("common name", &form.common_name, f == 1, theme),
@@ -74,7 +89,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &
     ));
     let after_usage = lines.len();
     lines.extend([
-        text_row("key length", &form.key_length, f == 12, theme),
+        key_length_row,
         text_row("alt names", &form.altnames, f == 8, theme),
         toggle_row(
             "sign mode",

@@ -684,11 +684,19 @@ mod convert {
     use cert_bar::config::{HashAlg, KeyType, Usage};
     use cert_bar::tui::app::{
         CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, REASON_OPTIONS,
-        RevokedRow, SignerState, USAGE_OPTIONS,
+        RSA_KEY_LENGTH_OPTIONS, RevokedRow, SignerState, USAGE_OPTIONS,
     };
     use cert_bar::tui::convert::{cert_from_form, cms_from_form, crl_from_form, csr_from_form};
     use num_bigint::BigUint;
     use num_traits::Num;
+
+    /// Index of an RSA key length in `RSA_KEY_LENGTH_OPTIONS`.
+    fn rsa_len_index(bits: u32) -> usize {
+        RSA_KEY_LENGTH_OPTIONS
+            .iter()
+            .position(|&n| n == bits)
+            .unwrap()
+    }
 
     /// Index of a key type in `KEY_TYPE_OPTIONS`.
     fn key_type_index(kt: KeyType) -> usize {
@@ -765,7 +773,7 @@ mod convert {
         fn test_cert_rsa_keylength_2048() {
             let mut form = base();
             form.key_type = key_type_index(KeyType::RSA);
-            form.key_length = "2048".to_string();
+            form.key_length = rsa_len_index(2048);
             let cert = cert_from_form(&form).unwrap();
             assert_eq!(cert.keytype, KeyType::RSA);
             assert_eq!(cert.keylength, Some(2048));
@@ -775,7 +783,7 @@ mod convert {
         fn test_cert_rsa_keylength_4096() {
             let mut form = base();
             form.key_type = key_type_index(KeyType::RSA);
-            form.key_length = "4096".to_string();
+            form.key_length = rsa_len_index(4096);
             let cert = cert_from_form(&form).unwrap();
             assert_eq!(cert.keylength, Some(4096));
         }
@@ -797,32 +805,21 @@ mod convert {
         }
 
         #[test]
-        fn test_cert_rsa_invalid_keylength() {
+        fn test_cert_rsa_keylength_defaults_to_first_option() {
+            // A fresh form (index 0) resolves to the first selectable RSA length;
+            // the selector makes invalid/non-numeric values impossible.
             let mut form = base();
             form.key_type = key_type_index(KeyType::RSA);
-            form.key_length = "3000".to_string();
-            let err = cert_from_form(&form).unwrap_err();
-            // Message names the allowed RSA lengths.
-            assert!(err.contains("not supported"), "{err}");
-            assert!(err.contains("2048") && err.contains("4096"), "{err}");
-        }
-
-        #[test]
-        fn test_cert_rsa_nonnumeric_keylength() {
-            let mut form = base();
-            form.key_type = key_type_index(KeyType::RSA);
-            form.key_length = "abc".to_string();
-            // Must Err (parse failure), never panic.
-            let err = cert_from_form(&form).unwrap_err();
-            assert!(err.contains("must be a number"), "{err}");
+            let cert = cert_from_form(&form).unwrap();
+            assert_eq!(cert.keylength, Some(RSA_KEY_LENGTH_OPTIONS[0]));
         }
 
         #[test]
         fn test_cert_ec_ignores_keylength() {
-            // P384 with a stray key length -> ignored (None per convert contract).
+            // P384 with any selected length index -> ignored (None per contract).
             let mut form = base();
             form.key_type = key_type_index(KeyType::P384);
-            form.key_length = "9999".to_string();
+            form.key_length = rsa_len_index(4096);
             let cert = cert_from_form(&form).unwrap();
             assert_eq!(cert.keytype, KeyType::P384);
             assert_eq!(cert.keylength, None);
@@ -862,12 +859,13 @@ mod convert {
 
         #[test]
         fn test_csr_blank_optionals_none() {
-            // altnames/usage/keylength blank -> None (hashalg is always set).
+            // altnames/usage blank -> None. base() is RSA, so keylength resolves
+            // to the first selectable option (it is a selector now, never blank).
             let data = csr_from_form(&base()).unwrap();
             let csr = &data.csrs[0];
             assert_eq!(csr.altnames, None);
             assert!(csr.usage.is_none());
-            assert_eq!(csr.keylength, None);
+            assert_eq!(csr.keylength, Some(RSA_KEY_LENGTH_OPTIONS[0]));
         }
 
         #[test]

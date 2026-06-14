@@ -62,6 +62,14 @@ impl KeyType {
             KeyType::RSA | KeyType::P224 | KeyType::P256 | KeyType::P384 | KeyType::P521
         )
     }
+
+    /// Whether a selectable key length (`keylength`) applies to this key type.
+    /// Only RSA has a tunable key size here; ECDSA curves and the PQC algorithms
+    /// have a fixed size determined by the chosen variant.
+    #[must_use]
+    pub fn uses_rsa_key_length(&self) -> bool {
+        matches!(self, KeyType::RSA)
+    }
 }
 
 pub trait FromKeyType {

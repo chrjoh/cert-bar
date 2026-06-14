@@ -100,6 +100,11 @@ pub const REASON_OPTIONS: &[Reason] = &[
     Reason::CaCompromise,
 ];
 
+/// Selectable RSA key lengths (bits). Only applies when the key type is RSA;
+/// other key types have no selectable length (see [`KeyType::uses_rsa_key_length`]).
+/// Mirrors the lengths the generation backend maps.
+pub const RSA_KEY_LENGTH_OPTIONS: &[u32] = &[2048, 4096];
+
 /// A `cert_pem_file` / `private_key_pem_file` pair, mirroring
 /// [`crate::config::Signer`]. Stored as text buffers; left empty when the
 /// optional signer is unset.
@@ -129,8 +134,8 @@ pub struct CertForm {
     pub organization: String,
     /// Index into [`KEY_TYPE_OPTIONS`].
     pub key_type: usize,
-    /// RSA key length buffer (only meaningful when key type is RSA).
-    pub key_length: String,
+    /// Index into [`RSA_KEY_LENGTH_OPTIONS`] (only used when key type is RSA).
+    pub key_length: usize,
     /// Index into [`HASH_ALG_OPTIONS`].
     pub hash_alg: usize,
     /// One toggle per [`USAGE_OPTIONS`] entry.
@@ -160,7 +165,7 @@ impl Default for CertForm {
             country: String::new(),
             organization: String::new(),
             key_type: 0,
-            key_length: String::new(),
+            key_length: 0,
             hash_alg: 0,
             usage: vec![false; USAGE_OPTIONS.len()],
             usage_cursor: 0,
@@ -188,8 +193,8 @@ pub struct CsrForm {
     pub organization: String,
     /// Index into [`KEY_TYPE_OPTIONS`].
     pub key_type: usize,
-    /// RSA key length buffer.
-    pub key_length: String,
+    /// Index into [`RSA_KEY_LENGTH_OPTIONS`] (only used when key type is RSA).
+    pub key_length: usize,
     /// Index into [`HASH_ALG_OPTIONS`].
     pub hash_alg: usize,
     /// One toggle per [`USAGE_OPTIONS`] entry.
@@ -222,7 +227,7 @@ impl Default for CsrForm {
             country: String::new(),
             organization: String::new(),
             key_type: 0,
-            key_length: String::new(),
+            key_length: 0,
             hash_alg: 0,
             usage: vec![false; USAGE_OPTIONS.len()],
             usage_cursor: 0,
@@ -1398,6 +1403,8 @@ fn cycle_cert(form: &mut CertForm, forward: bool) {
         5 => cycle_index(&mut form.hash_alg, HASH_ALG_OPTIONS.len(), forward),
         // ←→ move the usage highlight; toggling is done with Space.
         6 => cycle_index(&mut form.usage_cursor, USAGE_OPTIONS.len(), forward),
+        // key length (RSA only; ignored at conversion for other key types).
+        9 => cycle_index(&mut form.key_length, RSA_KEY_LENGTH_OPTIONS.len(), forward),
         _ => {}
     }
 }
@@ -1408,6 +1415,8 @@ fn cycle_csr(form: &mut CsrForm, forward: bool) {
         5 => cycle_index(&mut form.hash_alg, HASH_ALG_OPTIONS.len(), forward),
         // ←→ move the usage highlight; toggling is done with Space.
         6 => cycle_index(&mut form.usage_cursor, USAGE_OPTIONS.len(), forward),
+        // key length (RSA only).
+        12 => cycle_index(&mut form.key_length, RSA_KEY_LENGTH_OPTIONS.len(), forward),
         _ => {}
     }
 }
@@ -1466,7 +1475,7 @@ fn toggle_csr(form: &mut CsrForm) {
 /// | 6   | `usage`                        | multi-select|
 /// | 7   | `altnames`                     | text        |
 /// | 8   | `ca`                           | toggle      |
-/// | 9   | `key_length`                   | text        |
+/// | 9   | `key_length`                   | cycler (RSA)|
 /// | 10  | `valid_to`                     | text        |
 /// | 11  | `parent`                       | text        |
 /// | 12  | `signer.cert_pem_file`         | text / path |
@@ -1479,8 +1488,7 @@ fn cert_text_field(form: &mut CertForm) -> Option<&mut String> {
         3 => &mut form.organization,
         // 4 key_type (cycler), 5 hash_alg (cycler), 6 usage (toggle)
         7 => &mut form.altnames,
-        // 8 ca (toggle)
-        9 => &mut form.key_length,
+        // 8 ca (toggle), 9 key_length (cycler)
         10 => &mut form.valid_to,
         11 => &mut form.parent,
         12 => &mut form.signer.cert_pem_file,
@@ -1499,8 +1507,7 @@ fn csr_text_field(form: &mut CsrForm) -> Option<&mut String> {
         8 => &mut form.altnames,
         9 => &mut form.csr_pem_file,
         10 => &mut form.valid_to,
-        // 11 ca toggle
-        12 => &mut form.key_length,
+        // 11 ca toggle, 12 key_length (cycler)
         _ => return None,
     })
 }
@@ -1617,6 +1624,23 @@ mod tests {
         assert!(!app.cert_mut().ca);
         app.update(Message::Toggle);
         assert!(app.cert_mut().ca);
+    }
+
+    #[test]
+    fn key_length_field_cycles_through_rsa_options() {
+        let mut app = cert_app();
+        app.cert_mut().field = 9; // key length selector
+        assert_eq!(app.cert_mut().key_length, 0);
+        app.update(Message::Right);
+        assert_eq!(app.cert_mut().key_length, 1 % RSA_KEY_LENGTH_OPTIONS.len());
+        // Wrap back to the first option.
+        for _ in 1..RSA_KEY_LENGTH_OPTIONS.len() {
+            app.update(Message::Right);
+        }
+        assert_eq!(app.cert_mut().key_length, 0);
+        // It is a selector, not a text field — typing must not edit it.
+        app.update(Message::Char('9'));
+        assert_eq!(app.cert_mut().key_length, 0);
     }
 
     #[test]

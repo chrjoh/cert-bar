@@ -36,7 +36,9 @@ use super::widgets::{
     cycler_row, header, multiselect_rows, note_row, optional_text_row, render_form, text_row,
     toggle_row,
 };
-use crate::tui::app::{App, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, USAGE_OPTIONS};
+use crate::tui::app::{
+    App, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
+};
 use crate::tui::theme::Theme;
 
 /// Maximum number of rows the Certificates sub-list grows to before scrolling;
@@ -156,6 +158,20 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
         )
     };
 
+    // `key length` is a fixed-option cycler for RSA only; other key types have a
+    // size fixed by the variant, so it is shown as not-applicable.
+    let key_length_row = if selected_key.uses_rsa_key_length() {
+        let bits = RSA_KEY_LENGTH_OPTIONS[form.key_length % RSA_KEY_LENGTH_OPTIONS.len()];
+        cycler_row("key length", &bits.to_string(), f == 9, theme)
+    } else {
+        note_row(
+            "key length",
+            &format!("n/a — not used for {key_type} keys"),
+            f == 9,
+            theme,
+        )
+    };
+
     let mut lines: Vec<Line<'static>> = vec![
         text_row("id", &form.id, f == 0, theme),
         text_row("common name", &form.common_name, f == 1, theme),
@@ -177,7 +193,7 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
     lines.extend([
         text_row("alt names", &form.altnames, f == 7, theme),
         toggle_row("CA", form.ca, "is CA", f == 8, theme),
-        text_row("key length", &form.key_length, f == 9, theme),
+        key_length_row,
         optional_text_row("valid to", &form.valid_to, f == 10, theme),
         optional_text_row("parent", &form.parent, f == 11, theme),
         Line::from(""),
@@ -287,6 +303,30 @@ mod tests {
                 "usage option {opt:?} must be visible (one per row)"
             );
         }
+    }
+
+    #[test]
+    fn key_length_is_cycler_for_rsa_and_na_otherwise() {
+        // RSA (default index 0) -> a fixed-option cycler showing the bit length.
+        let app = cert_app();
+        let out = render_sized(&app, 70, 40);
+        assert!(out.contains("key length"));
+        assert!(
+            out.contains(&RSA_KEY_LENGTH_OPTIONS[0].to_string()),
+            "RSA shows a selectable key length"
+        );
+
+        // Ed25519 -> key length is not applicable.
+        let mut app = cert_app();
+        app.cert_mut().key_type = KEY_TYPE_OPTIONS
+            .iter()
+            .position(|k| format!("{k:?}") == "Ed25519")
+            .expect("Ed25519 present");
+        let out = render_sized(&app, 70, 40);
+        assert!(
+            out.contains("n/a"),
+            "non-RSA key length should render as not-applicable"
+        );
     }
 
     #[test]

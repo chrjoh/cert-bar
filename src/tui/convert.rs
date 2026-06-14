@@ -22,13 +22,8 @@ use crate::config::{
 };
 use crate::tui::app::{
     CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, REASON_OPTIONS,
-    RevokedRow, SignerState, USAGE_OPTIONS,
+    RSA_KEY_LENGTH_OPTIONS, RevokedRow, SignerState, USAGE_OPTIONS,
 };
-
-/// Accepted RSA key lengths. Mirrors the lengths the generation backend maps
-/// (anything else is rejected so the user gets a clear error rather than a
-/// silently-coerced 2048-bit key).
-const ACCEPTED_RSA_KEY_LENGTHS: &[u32] = &[2048, 4096];
 
 /// Typed conversion/validation error, mapped to a `String` at the public
 /// boundary so the TUI can show a readable message in its status slot.
@@ -39,10 +34,6 @@ const ACCEPTED_RSA_KEY_LENGTHS: &[u32] = &[2048, 4096];
 enum ConvertError {
     /// A required free-text field was left empty.
     Required(&'static str),
-    /// The RSA key length buffer was not a valid unsigned integer.
-    InvalidKeyLength(String),
-    /// The RSA key length was parsed but is not an accepted value.
-    UnsupportedRsaKeyLength(u32),
     /// A revoked-cert serial was not valid hexadecimal.
     InvalidSerial(String),
     /// A selected option index pointed outside its `*_OPTIONS` slice.
@@ -56,15 +47,6 @@ impl fmt::Display for ConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Required(field) => write!(f, "{field} is required"),
-            Self::InvalidKeyLength(got) => {
-                write!(f, "key length must be a number (got \"{got}\")")
-            }
-            Self::UnsupportedRsaKeyLength(len) => {
-                write!(
-                    f,
-                    "RSA key length {len} is not supported (allowed: 2048, 4096)"
-                )
-            }
             Self::InvalidSerial(serial) => {
                 write!(f, "revoked serial \"{serial}\" is not valid hex")
             }
@@ -93,9 +75,9 @@ impl From<ConvertError> for String {
 ///
 /// # Errors
 ///
-/// Returns a user-readable message when `id` or the common name is empty, when
-/// an RSA key length is present but invalid/unsupported, or when an enum
-/// selection index is out of range.
+/// Returns a user-readable message when `id` or the common name is empty, when a
+/// signer is half-specified, or when an enum selection index is out of range.
+/// (RSA key length is chosen from a fixed selector, so it can never be invalid.)
 pub fn cert_from_form(form: &CertForm) -> Result<Certificate, String> {
     Ok(cert_from_form_inner(form)?)
 }
@@ -104,7 +86,7 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
     let id = required("id", &form.id)?;
     let common_name = required("common name", &form.common_name)?;
     let keytype = key_type_at(form.key_type)?;
-    let keylength = rsa_key_length(form.key_type, &form.key_length)?;
+    let keylength = rsa_key_length(form.key_type, form.key_length)?;
     // A hash algorithm only applies to key types that sign over an external
     // hash (RSA / ECDSA). For Ed25519 and the PQC algorithms it is left unset
     // so it is omitted from a saved config.
@@ -142,8 +124,8 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
 /// # Errors
 ///
 /// Returns a user-readable message when required fields for the active mode are
-/// missing, when an RSA key length is invalid/unsupported, or when an enum
-/// selection index is out of range.
+/// missing, when a signer is half-specified, or when an enum selection index is
+/// out of range. (RSA key length is a fixed selector and cannot be invalid.)
 pub fn csr_from_form(form: &CsrForm) -> Result<CsrData, String> {
     Ok(csr_from_form_inner(form)?)
 }
@@ -167,7 +149,7 @@ fn csr_from_form_inner(form: &CsrForm) -> Result<CsrData, ConvertError> {
     let id = required("id", &form.id)?;
     let common_name = required("common name", &form.common_name)?;
     let keytype = key_type_at(form.key_type)?;
-    let keylength = rsa_key_length(form.key_type, &form.key_length)?;
+    let keylength = rsa_key_length(form.key_type, form.key_length)?;
     // A hash algorithm only applies to key types that sign over an external
     // hash (RSA / ECDSA). For Ed25519 and the PQC algorithms it is left unset
     // so it is omitted from a saved config.
@@ -271,7 +253,7 @@ pub fn cert_to_form(cert: &Certificate) -> CertForm {
         country: cert.pkix.country.clone(),
         organization: cert.pkix.organization.clone(),
         key_type: key_type_index(&cert.keytype),
-        key_length: key_length_buffer(cert.keylength),
+        key_length: key_length_index(cert.keylength),
         // For key types with no `hashalg` (Ed25519/PQC) the config value is
         // `None`; we fall back to index 0. That index is ignored on
         // regeneration for those key types, so this is harmless.
@@ -300,7 +282,7 @@ pub fn csr_to_form(csr: &Csr) -> CsrForm {
         country: csr.pkix.country.clone(),
         organization: csr.pkix.organization.clone(),
         key_type: key_type_index(&csr.keytype),
-        key_length: key_length_buffer(csr.keylength),
+        key_length: key_length_index(csr.keylength),
         hash_alg: csr.hashalg.as_ref().map(hash_alg_index).unwrap_or(0),
         usage: usage_flags(&csr.usage),
         usage_cursor: 0,
@@ -429,9 +411,12 @@ fn serial_hex(serial: &BigUint) -> String {
     serial.to_str_radix(16)
 }
 
-/// Renders an optional RSA key length back to a buffer; `None` -> empty string.
-fn key_length_buffer(length: Option<u32>) -> String {
-    length.map(|n| n.to_string()).unwrap_or_default()
+/// Maps an optional RSA key length back to its [`RSA_KEY_LENGTH_OPTIONS`] index
+/// for the form selector; unknown or `None` lengths fall back to index 0.
+fn key_length_index(length: Option<u32>) -> usize {
+    length
+        .and_then(|n| RSA_KEY_LENGTH_OPTIONS.iter().position(|&o| o == n))
+        .unwrap_or(0)
 }
 
 /// Clones an optional string into a buffer; `None` -> empty string.
@@ -531,26 +516,19 @@ fn reason_at(index: usize) -> Result<Reason, ConvertError> {
         .ok_or(ConvertError::BadIndex("reason"))
 }
 
-/// Validates and resolves the RSA key length. Returns `None` for non-RSA key
-/// types (length is irrelevant) or when the RSA length buffer is blank (the
-/// backend defaults it). A present-but-invalid or unsupported value errors.
-fn rsa_key_length(key_type_index: usize, buffer: &str) -> Result<Option<u32>, ConvertError> {
+/// Resolves the RSA key length from the selected option index. Returns `None`
+/// for non-RSA key types (length is irrelevant); for RSA it maps the index into
+/// [`RSA_KEY_LENGTH_OPTIONS`] (the selector guarantees a valid value, so no
+/// parsing or validation error is possible).
+fn rsa_key_length(key_type_index: usize, length_index: usize) -> Result<Option<u32>, ConvertError> {
     let key_type = key_type_at(key_type_index)?;
-    if key_type != crate::config::KeyType::RSA {
+    if !key_type.uses_rsa_key_length() {
         return Ok(None);
     }
-    let trimmed = buffer.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let length: u32 = trimmed
-        .parse()
-        .map_err(|_| ConvertError::InvalidKeyLength(trimmed.to_string()))?;
-    if ACCEPTED_RSA_KEY_LENGTHS.contains(&length) {
-        Ok(Some(length))
-    } else {
-        Err(ConvertError::UnsupportedRsaKeyLength(length))
-    }
+    let len = *RSA_KEY_LENGTH_OPTIONS
+        .get(length_index)
+        .unwrap_or(&RSA_KEY_LENGTH_OPTIONS[0]);
+    Ok(Some(len))
 }
 
 /// Parses a revoked-cert serial from a hex buffer, stripping `:` separators
@@ -647,38 +625,30 @@ mod tests {
         }
 
         #[test]
-        fn accepts_valid_rsa_key_length() {
-            let mut form = filled_cert();
-            form.key_length = "4096".to_string();
-            let cert = cert_from_form(&form).unwrap();
-            assert_eq!(cert.keylength, Some(4096));
+        fn rsa_key_length_resolves_from_selected_index() {
+            let mut form = filled_cert(); // defaults to RSA
+            // Default index 0 maps to the first option.
+            assert_eq!(
+                cert_from_form(&form).unwrap().keylength,
+                Some(RSA_KEY_LENGTH_OPTIONS[0])
+            );
+            // Select the 4096 option by its index.
+            form.key_length = RSA_KEY_LENGTH_OPTIONS
+                .iter()
+                .position(|&n| n == 4096)
+                .unwrap();
+            assert_eq!(cert_from_form(&form).unwrap().keylength, Some(4096));
         }
 
         #[test]
-        fn rejects_unsupported_rsa_key_length() {
+        fn key_length_is_none_for_non_rsa_key_type() {
             let mut form = filled_cert();
-            form.key_length = "1234".to_string();
-            let err = cert_from_form(&form).unwrap_err();
-            assert!(err.contains("not supported"), "{err}");
-        }
-
-        #[test]
-        fn rejects_non_numeric_rsa_key_length() {
-            let mut form = filled_cert();
-            form.key_length = "abc".to_string();
-            let err = cert_from_form(&form).unwrap_err();
-            assert!(err.contains("must be a number"), "{err}");
-        }
-
-        #[test]
-        fn ignores_key_length_for_non_rsa_key_type() {
-            let mut form = filled_cert();
-            // P256 sits at a non-zero index; a stray key_length must be ignored.
+            // P256 sits at a non-zero index; the selected length index is ignored.
             form.key_type = KEY_TYPE_OPTIONS
                 .iter()
                 .position(|k| *k == KeyType::P256)
                 .unwrap();
-            form.key_length = "9999".to_string();
+            form.key_length = 1; // would be 4096 for RSA, but must be ignored
             let cert = cert_from_form(&form).unwrap();
             assert_eq!(cert.keylength, None);
             assert_eq!(cert.keytype, KeyType::P256);
@@ -1073,7 +1043,6 @@ mod tests {
                 common_name: "Example CN".to_string(),
                 country: "SE".to_string(),
                 organization: "Example Org".to_string(),
-                key_length: "4096".to_string(),
                 altnames: "a.com, b.com".to_string(),
                 ca: true,
                 valid_to: "2030-01-01".to_string(),
@@ -1082,6 +1051,10 @@ mod tests {
             form.key_type = KEY_TYPE_OPTIONS
                 .iter()
                 .position(|k| *k == KeyType::RSA)
+                .unwrap();
+            form.key_length = RSA_KEY_LENGTH_OPTIONS
+                .iter()
+                .position(|&n| n == 4096)
                 .unwrap();
             form.hash_alg = HASH_ALG_OPTIONS
                 .iter()
