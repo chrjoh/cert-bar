@@ -1315,6 +1315,45 @@ mod generation {
         assert!(dir.path().join("tui-ca_pkey.pem").exists());
     }
 
+    /// T-001: a generated private key must be owner-only (0600), not the OS
+    /// default world-readable 0644. End-to-end through the real save path.
+    #[cfg(unix)]
+    #[test]
+    fn test_generated_private_key_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let cert = Certificate {
+            id: "perm-ca".to_string(),
+            parent: Some("perm-ca".to_string()),
+            signer: None,
+            ca: Some(true),
+            pkix: pkix("perm-ca"),
+            keytype: KeyType::P256,
+            altnames: None,
+            hashalg: Some(HashAlg::SHA256),
+            keylength: None,
+            validto: None,
+            usage: Some(vec![Usage::certsign]),
+        };
+        certificate::create(vec![cert], dir.path()).unwrap();
+
+        let key = dir.path().join("perm-ca_pkey.pem");
+        let key_mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            key_mode, 0o600,
+            "private key must be 0600, got {key_mode:o}"
+        );
+
+        // The public certificate is intentionally left readable (test harnesses
+        // consume it) — it must NOT have been locked down to owner-only.
+        let cert_mode = std::fs::metadata(dir.path().join("perm-ca_cert.pem"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_ne!(cert_mode, 0o600, "public cert should not be owner-only");
+    }
+
     #[test]
     fn test_certificate_create_rsa_4096_accepts() {
         // RSA + keylength 4096 exactly as convert would set it.

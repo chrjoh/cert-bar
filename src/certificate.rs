@@ -61,7 +61,11 @@ impl CertificateSaver for RealCertificateSaver {
         path: &str,
         id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        cert.cert.save(path, id)
+        cert.cert.save(path, id)?;
+        // Generated private keys are written world-readable by default; restrict
+        // them to owner-only so other local users can't read them.
+        crate::secure_file::harden_private_key(path, id);
+        Ok(())
     }
 }
 
