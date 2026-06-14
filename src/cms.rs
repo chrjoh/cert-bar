@@ -45,8 +45,9 @@ use x509_cert::time::Time;
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If all CMS configurations were processed successfully
-/// * `Err(Box<dyn std::error::Error>)` - If there was an error loading signer certificates
+/// * `Ok(())` - If every CMS configuration was processed successfully
+/// * `Err(Box<dyn std::error::Error>)` - If one or more configurations failed; the message
+///   lists each failure as `"<id>: <error>"`, with one failure per line
 ///
 /// # Generated Files
 ///
@@ -57,10 +58,12 @@ use x509_cert::time::Time;
 ///
 /// # Behavior
 ///
-/// * **Non-fatal errors**: If CMS creation fails for one configuration, the function continues
-///   processing remaining configurations and logs the error to stderr
-/// * **Fatal errors**: Only signer certificate loading errors cause the function to return early
-/// * **File overwriting**: Existing files with the same names will be overwritten
+/// * **Failure accumulation**: Processing continues across all configurations. Each per-entry
+///   failure (data preparation, file save, or signing) is recorded and identified by the entry's
+///   `id`. If any entry failed, the accumulated messages are joined with newlines and returned as
+///   an `Err`; otherwise `Ok(())` is returned. The function never writes to stdout/stderr and
+///   never panics, so it is safe to call from a TUI drawing into the alternate screen.
+/// * **File overwriting**: Existing files with the same names will be overwritten.
 ///
 /// # Cryptographic Operations
 ///
@@ -68,18 +71,19 @@ use x509_cert::time::Time;
 /// * **Signing**: Supports RSA, P-256, and P-384 keys with SHA-256 hashing
 /// * **Recipient limitations**: Only RSA certificates are supported for encryption recipients
 ///
-/// # Error Handling
+/// # Errors
 ///
-/// Individual CMS generation failures are logged but don't stop processing:
+/// Returns an `Err` whose message names every failing entry by `id`, for example:
 /// ```text
-/// Failed to create cms: Unsupported key algorithm for encryption. Found OID: 1.2.840.10045.3.1.7
-/// Failed to create pkcs7 signed data: Invalid key format
+/// example: Recipient certificate can not be used for encryption: ...
+/// other: Failed to create pkcs7 signed data
 /// ```
-///
 pub fn handle<C: AsRef<Path>>(
     cms_data: Vec<Cms>,
     output_dir: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut failures: Vec<String> = Vec::new();
+
     for cms in &cms_data {
         let data_result = if cms.recipient.is_some() {
             create_cms(cms)
@@ -87,26 +91,31 @@ pub fn handle<C: AsRef<Path>>(
             data_to_sign(cms)
         };
 
-        if let Ok(data) = data_result {
-            if cms.recipient.is_some()
-                && let Err(e) = save_file_with_extension(&output_dir, &cms.id, "cms", &data)
-            {
-                eprintln!("Failed to save CMS file: {}", e);
+        let data = match data_result {
+            Ok(data) => data,
+            Err(e) => {
+                failures.push(format!("{}: {}", cms.id, e));
                 continue;
             }
-            if let Err(e) = sign_and_save(cms, &data, &output_dir) {
-                eprintln!("Failed to sign data: {}", e);
-            }
-        } else {
-            let error_msg = if cms.recipient.is_some() {
-                "Failed to create CMS"
-            } else {
-                "Failed to prepare clear text data"
-            };
-            eprintln!("{}: {}", error_msg, data_result.unwrap_err());
+        };
+
+        if cms.recipient.is_some()
+            && let Err(e) = save_file_with_extension(&output_dir, &cms.id, "cms", &data)
+        {
+            failures.push(format!("{}: {}", cms.id, e));
+            continue;
+        }
+
+        if let Err(e) = sign_and_save(cms, &data, &output_dir) {
+            failures.push(format!("{}: {}", cms.id, e));
         }
     }
-    Ok(())
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
 }
 
 fn sign_and_save<C: AsRef<Path>>(
@@ -123,15 +132,13 @@ fn sign_and_save<C: AsRef<Path>>(
             Ok(pkcs7_der) => {
                 let extension = if detached { "p7s" } else { "pkcs7" };
                 save_file_with_extension(&output_dir, &cms.id, extension, &pkcs7_der)
-                    .expect("failed to save cms file");
+                    .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 Ok(())
             }
-            Err(e) => {
-                eprintln!("Failed to create pkcs7 signed data: {}", e);
-                Err(cms::builder::Error::Builder(
-                    "Failed to create pkcs7 signed data".to_string(),
-                ))
-            }
+            Err(e) => Err(cms::builder::Error::Builder(format!(
+                "Failed to create pkcs7 signed data: {}",
+                e
+            ))),
         }
     } else {
         // No signer specified, skip signing
@@ -181,13 +188,10 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
         ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
     let algorithm_oid = &cert.tbs_certificate.subject_public_key_info.algorithm.oid;
     if *algorithm_oid != RSA_ENCRYPTION_OID {
-        eprintln!(
-            "Certificate does not use RSA encryption. Found OID: {}",
+        return Err(cms::builder::Error::Builder(format!(
+            "Can only create CMS using RSA key. Certificate uses OID: {}",
             algorithm_oid
-        );
-        return Err(cms::builder::Error::Builder(
-            "Can only create CMS using RSA key".to_string(),
-        ));
+        )));
     }
     let recipient_id =
         RecipientIdentifier::IssuerAndSerialNumber(cms::cert::IssuerAndSerialNumber {
@@ -285,10 +289,14 @@ impl DetectedKey {
         let mut rng = rand::thread_rng();
         rng.fill_bytes(&mut nonce_bytes);
         let mut sender_nonce_value: SetOfVec<AttributeValue> = Default::default();
-        let nonce = OctetString::new(nonce_bytes).unwrap();
+        let nonce = OctetString::new(nonce_bytes)
+            .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
         sender_nonce_value
-            .insert(Any::new(Tag::OctetString, nonce.as_bytes()).unwrap())
-            .unwrap();
+            .insert(
+                Any::new(Tag::OctetString, nonce.as_bytes())
+                    .map_err(|e| cms::builder::Error::Builder(e.to_string()))?,
+            )
+            .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
         let sender_nonce = Attribute {
             oid: RFC8894_ID_SENDER_NONCE,
             values: sender_nonce_value,
@@ -305,19 +313,19 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
-                    .unwrap();
+                    .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 if let Some(original_data) = data {
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     let message_digest_attr =
                         DetectedKey::detached_hash_calculated_attribute(original_data)?;
                     signer_info_builder
                         .add_signed_attribute(message_digest_attr)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
@@ -343,19 +351,19 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
-                    .unwrap();
+                    .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 if let Some(original_data) = data {
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     let message_digest_attr =
                         DetectedKey::detached_hash_calculated_attribute(original_data)?;
                     signer_info_builder
                         .add_signed_attribute(message_digest_attr)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
@@ -380,19 +388,19 @@ impl DetectedKey {
                 )?;
                 signer_info_builder
                     .add_signed_attribute(sender_nonce)
-                    .unwrap();
+                    .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 if let Some(original_data) = data {
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_content_type_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     signer_info_builder
                         .add_signed_attribute(DetectedKey::add_signing_time_attribute()?)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                     let message_digest_attr =
                         DetectedKey::detached_hash_calculated_attribute(original_data)?;
                     signer_info_builder
                         .add_signed_attribute(message_digest_attr)
-                        .unwrap();
+                        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
                 }
                 let mut signed_builder = SignedDataBuilder::new(encapsulated_content);
                 let signed_data = signed_builder
@@ -491,7 +499,11 @@ fn create_pkcs7_signed_data(
     // Detect the key type
     let detected_key = DetectedKey::from_pem(&pem_string)?;
 
-    let signer_cert = Certificate::from_pem(signer.x509.to_pem().unwrap())?;
+    let signer_pem = signer
+        .x509
+        .to_pem()
+        .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
+    let signer_cert = Certificate::from_pem(signer_pem)?;
     match verify_signing_certificate(&signer_cert) {
         Ok(_) => {}
         Err(e) => {
@@ -838,6 +850,71 @@ mod tests {
 
         (config, data_file, cert_file, key_file)
     }
+    #[test]
+    fn test_handle_returns_err_when_entry_fails_to_sign() {
+        // A signer certificate that lacks the Key Usage extension cannot be used for
+        // signing, so `sign_and_save` fails and `handle` must surface it as an `Err`.
+        let signer_cert = dummy_rsa_no_sig_key_certificate();
+        let rsa_cert = dummy_rsa_certificate();
+
+        let mut cert_file = NamedTempFile::new().unwrap();
+        let mut key_file = NamedTempFile::new().unwrap();
+        let mut recipient_file = NamedTempFile::new().unwrap();
+        let mut data_file = NamedTempFile::new().unwrap();
+
+        cert_file
+            .write_all(&signer_cert.x509.to_pem().unwrap())
+            .unwrap();
+        cert_file.flush().unwrap();
+        key_file
+            .write_all(
+                &signer_cert
+                    .pkey
+                    .as_ref()
+                    .unwrap()
+                    .private_key_to_pem_pkcs8()
+                    .unwrap(),
+            )
+            .unwrap();
+        key_file.flush().unwrap();
+        recipient_file
+            .write_all(&rsa_cert.x509.to_pem().unwrap())
+            .unwrap();
+        recipient_file.flush().unwrap();
+        data_file.write_all(b"payload to sign").unwrap();
+        data_file.flush().unwrap();
+
+        let config = Cms {
+            id: "broken-signer".to_string(),
+            recipient: Some(recipient_file.path().to_string_lossy().to_string()),
+            data_file: data_file.path().to_string_lossy().to_string(),
+            signer: Some(crate::config::Signer {
+                cert_pem_file: cert_file.path().to_string_lossy().to_string(),
+                private_key_pem_file: key_file.path().to_string_lossy().to_string(),
+            }),
+            detached: None,
+        };
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let err = handle(vec![config], output_dir.path()).unwrap_err();
+
+        assert!(
+            err.to_string().contains("broken-signer"),
+            "error message must name the failing entry by id, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_handle_returns_ok_on_successful_signing() {
+        let (config, _data_file, _cert_file, _key_file) =
+            create_test_pkcs7_config_with_files(false);
+        let output_dir = tempfile::tempdir().unwrap();
+
+        // A fully valid signer/recipient configuration must return Ok(()).
+        handle(vec![config], output_dir.path()).unwrap();
+    }
+
     #[test]
     fn test_cms_integration_with_detached_signature() {
         let (config, _data_file, _cert_file, _key_file) = create_test_pkcs7_config_with_files(true);

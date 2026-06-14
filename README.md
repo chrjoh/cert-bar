@@ -60,6 +60,14 @@ cargo run -- crl --config-file ./examples/test_crl.yaml --output-dir ./certs
 cargo run -- cms --config-file ./examples/cms_config.yaml --output-dir ./cms_data
 ```
 
+### Interactive TUI
+
+Besides the CLI, cert-bar ships an interactive terminal UI for building certificates, CSRs, CRLs, and CMS messages with forms (a built-in file browser for selecting key/cert paths) instead of hand-writing YAML — it can generate the output directly or save a replayable YAML config. It is gated behind the `tui` feature:
+
+```bash
+cargo run --features tui -- tui
+```
+
 ### Post-Quantum Cryptography (PQC)
 
 In addition to the classical key types, **certificates**, **CSRs**, and **CRLs** support post-quantum algorithms. The available PQC key types are:

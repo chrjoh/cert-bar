@@ -2,4 +2,7 @@
 /certs
 /cms_data
 .DS_Store
-todo.txt
+docs/*
+CLAUDE.md
+spec/*
+.claude
