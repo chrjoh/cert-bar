@@ -1418,8 +1418,29 @@ impl App {
     /// decide whether printable keys are typed characters or shortcuts.
     #[must_use]
     pub fn focused_field_is_text(&self) -> bool {
-        let mut probe = self.clone();
-        probe.active_text_field_mut().is_some()
+        self.active_text_field().is_some()
+    }
+
+    /// Shared (read-only) view of the focused field's text buffer, if it is a
+    /// free-text field. The immutable twin of [`Self::active_text_field_mut`] —
+    /// classification only depends on `screen`/`focus`/the field index, so this
+    /// avoids cloning the whole `App` just to answer "is the focus a text field"
+    /// (see [`Self::focused_field_is_text`], called on every key event).
+    fn active_text_field(&self) -> Option<&String> {
+        // The entry sub-list is not a text field.
+        if self.focus == Focus::Entries {
+            return None;
+        }
+        match self.screen {
+            Screen::Cert => cert_text_field_ref(self.cert()),
+            Screen::Csr => csr_text_field_ref(self.csr()),
+            // While a revoked row is selected, focus is in the table (not on a
+            // fixed text field), so typing/clear must not touch field 0..=2.
+            Screen::Crl if self.crl.selected_row.is_some() => None,
+            Screen::Crl => crl_text_field_ref(&self.crl),
+            Screen::Cms => cms_text_field_ref(self.cms()),
+            Screen::Menu => None,
+        }
     }
 
     /// Mutable access to the text buffer for the currently focused field, if
@@ -1780,6 +1801,61 @@ fn cms_text_field(form: &mut CmsForm) -> Option<&mut String> {
         2 => &mut form.recipient,
         3 => &mut form.signer.cert_pem_file,
         4 => &mut form.signer.private_key_pem_file,
+        _ => return None,
+    })
+}
+
+// Read-only twins of the `*_text_field` routers above. They mirror the same
+// field-index -> buffer mapping but borrow shared, so `active_text_field`
+// (hence `focused_field_is_text`, called per key event) needs no `App` clone.
+// Keep each in lock-step with its `_mut` counterpart.
+
+fn cert_text_field_ref(form: &CertForm) -> Option<&String> {
+    Some(match form.field {
+        0 => &form.id,
+        1 => &form.common_name,
+        2 => &form.country,
+        3 => &form.organization,
+        7 => &form.altnames,
+        10 => &form.valid_to,
+        11 => &form.parent,
+        12 => &form.signer.cert_pem_file,
+        13 => &form.signer.private_key_pem_file,
+        _ => return None,
+    })
+}
+
+fn csr_text_field_ref(form: &CsrForm) -> Option<&String> {
+    Some(match form.field {
+        0 => &form.id,
+        1 => &form.common_name,
+        2 => &form.country,
+        3 => &form.organization,
+        8 => &form.altnames,
+        9 => &form.csr_pem_file,
+        10 => &form.valid_to,
+        13 => &form.signer.cert_pem_file,
+        14 => &form.signer.private_key_pem_file,
+        _ => return None,
+    })
+}
+
+fn crl_text_field_ref(form: &CrlForm) -> Option<&String> {
+    Some(match form.field {
+        0 => &form.crl_file,
+        1 => &form.signer.cert_pem_file,
+        2 => &form.signer.private_key_pem_file,
+        _ => return None,
+    })
+}
+
+fn cms_text_field_ref(form: &CmsForm) -> Option<&String> {
+    Some(match form.field {
+        0 => &form.id,
+        1 => &form.data_file,
+        2 => &form.recipient,
+        3 => &form.signer.cert_pem_file,
+        4 => &form.signer.private_key_pem_file,
         _ => return None,
     })
 }
