@@ -41,6 +41,12 @@ enum ConvertError {
     /// An optional signer had only one of its certificate / private-key paths
     /// filled in — signing needs both.
     PartialSigner,
+    /// An `id` contained a path separator, a `..` component, or was absolute,
+    /// which would let a generated file escape the output directory.
+    InvalidId(String),
+    /// A CMS entry had neither a recipient (encrypt) nor a signer (sign), so it
+    /// would produce no output.
+    CmsNoOutput,
 }
 
 impl fmt::Display for ConvertError {
@@ -57,6 +63,14 @@ impl fmt::Display for ConvertError {
                 f,
                 "signer requires both a certificate PEM and a private key PEM \
                  (one was left blank)"
+            ),
+            Self::InvalidId(id) => write!(
+                f,
+                "id \"{id}\" must not contain path separators, \"..\", or be absolute"
+            ),
+            Self::CmsNoOutput => write!(
+                f,
+                "a CMS entry needs at least a recipient (encrypt) or a signer (sign)"
             ),
         }
     }
@@ -83,7 +97,7 @@ pub fn cert_from_form(form: &CertForm) -> Result<Certificate, String> {
 }
 
 fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
-    let id = required("id", &form.id)?;
+    let id = required_id("id", &form.id)?;
     let common_name = required("common name", &form.common_name)?;
     let keytype = key_type_at(form.key_type)?;
     let keylength = rsa_key_length(form.key_type, form.key_length)?;
@@ -146,7 +160,7 @@ fn csr_from_form_inner(form: &CsrForm) -> Result<CsrData, ConvertError> {
         });
     }
 
-    let id = required("id", &form.id)?;
+    let id = required_id("id", &form.id)?;
     let common_name = required("common name", &form.common_name)?;
     let keytype = key_type_at(form.key_type)?;
     let keylength = rsa_key_length(form.key_type, form.key_length)?;
@@ -215,19 +229,30 @@ fn crl_from_form_inner(form: &CrlForm) -> Result<Crl, ConvertError> {
 ///
 /// # Errors
 ///
-/// Returns a user-readable message when `id` or the data file path is empty.
+/// Returns a user-readable message when `id` or the data file path is empty,
+/// when the `id` is not a safe filename (see [`required_id`]), or when the entry
+/// has neither a recipient (encrypt) nor a signer (sign) and would produce no
+/// output.
 pub fn cms_from_form(form: &CmsForm) -> Result<Cms, String> {
     Ok(cms_from_form_inner(form)?)
 }
 
 fn cms_from_form_inner(form: &CmsForm) -> Result<Cms, ConvertError> {
-    let id = required("id", &form.id)?;
+    let id = required_id("id", &form.id)?;
     let data_file = required("data file", &form.data_file)?;
+    let signer = signer_opt(&form.signer)?;
+    let recipient = optional(&form.recipient);
+    // A CMS entry must produce output: encrypt (recipient) or sign (signer). An
+    // entry with neither would let `handle()` return Ok while writing no file,
+    // so reject it loudly at the form->config boundary.
+    if signer.is_none() && recipient.is_none() {
+        return Err(ConvertError::CmsNoOutput);
+    }
 
     Ok(Cms {
         id,
-        signer: signer_opt(&form.signer)?,
-        recipient: optional(&form.recipient),
+        signer,
+        recipient,
         data_file,
         detached: Some(form.detached),
     })
@@ -411,6 +436,27 @@ fn serial_hex(serial: &BigUint) -> String {
     serial.to_str_radix(16)
 }
 
+/// Detects, without mutating anything, whether a loaded RSA key length would be
+/// silently coerced by [`key_length_index`].
+///
+/// Returns `Some(original_len)` only when `keytype` uses an RSA key length and
+/// `keylength` is `Some(n)` with `n` *not* in [`RSA_KEY_LENGTH_OPTIONS`] — i.e.
+/// the value `key_length_index` would map to index `0`. For any in-range length,
+/// a `None` length, or a non-RSA key type it returns `None`.
+///
+/// The caller (the config-load effect in `mod.rs`) uses this to surface a
+/// visible warning instead of letting the downgrade happen silently. The
+/// selector model stays `{2048, 4096}`; this helper only *reports* the mismatch.
+pub(crate) fn coerced_rsa_keylength(keytype: &KeyType, keylength: Option<u32>) -> Option<u32> {
+    if !keytype.uses_rsa_key_length() {
+        return None;
+    }
+    match keylength {
+        Some(n) if !RSA_KEY_LENGTH_OPTIONS.contains(&n) => Some(n),
+        _ => None,
+    }
+}
+
 /// Maps an optional RSA key length back to its [`RSA_KEY_LENGTH_OPTIONS`] index
 /// for the form selector; unknown or `None` lengths fall back to index 0.
 fn key_length_index(length: Option<u32>) -> usize {
@@ -451,6 +497,24 @@ fn required(field: &'static str, value: &str) -> Result<String, ConvertError> {
     } else {
         Ok(trimmed.to_string())
     }
+}
+
+/// Trims `value`, requires it to be non-empty (like [`required`]) and rejects
+/// any id that could escape the output directory when used as a filename:
+/// one containing a path separator (`/` or `\`), a `..` path component, or that
+/// is absolute. This is the canonical id-sanitization boundary; every
+/// `*_from_form` id field flows through it so both TUI-typed ids and ids
+/// reverse-mapped from a loaded config are checked before generation/save.
+fn required_id(field: &'static str, value: &str) -> Result<String, ConvertError> {
+    let trimmed = required(field, value)?;
+    let has_separator = trimmed.contains('/') || trimmed.contains('\\');
+    let has_parent = std::path::Path::new(&trimmed)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if has_separator || has_parent || std::path::Path::new(&trimmed).is_absolute() {
+        return Err(ConvertError::InvalidId(trimmed));
+    }
+    Ok(trimmed)
 }
 
 /// Maps a blank (whitespace-only) optional buffer to `None`, otherwise the
@@ -896,12 +960,14 @@ mod tests {
     mod cms_from_form {
         use super::*;
 
+        /// A minimal *valid* CMS form: a recipient is set so the entry has at
+        /// least one output mode (R4), keeping the unrelated tests focused.
         fn filled_cms() -> CmsForm {
             CmsForm {
                 id: "cms1".to_string(),
                 data_file: "msg.txt".to_string(),
                 signer: SignerState::default(),
-                recipient: String::new(),
+                recipient: "rcpt.pem".to_string(),
                 detached: false,
                 field: 0,
             }
@@ -913,8 +979,28 @@ mod tests {
             assert_eq!(cms.id, "cms1");
             assert_eq!(cms.data_file, "msg.txt");
             assert!(cms.signer.is_none());
-            assert!(cms.recipient.is_none());
+            assert_eq!(cms.recipient, Some("rcpt.pem".to_string()));
             assert_eq!(cms.detached, Some(false));
+        }
+
+        #[test]
+        fn rejects_entry_with_neither_recipient_nor_signer() {
+            let mut form = filled_cms();
+            form.recipient = String::new();
+            // signer already blank in filled_cms
+            let err = cms_from_form(&form).unwrap_err();
+            assert!(
+                err.contains("at least a recipient"),
+                "an entry with no output mode must be rejected, got: {err}"
+            );
+        }
+
+        #[test]
+        fn rejects_invalid_id() {
+            let mut form = filled_cms();
+            form.id = "../escape".to_string();
+            let err = cms_from_form(&form).unwrap_err();
+            assert!(err.contains("must not contain path separators"), "{err}");
         }
 
         #[test]
@@ -963,6 +1049,91 @@ mod tests {
             // cert left blank
             let err = cms_from_form(&form).unwrap_err();
             assert!(err.contains("signer requires both"), "{err}");
+        }
+    }
+
+    mod required_id {
+        use super::*;
+
+        #[test]
+        fn accepts_a_normal_id() {
+            assert_eq!(required_id("id", "  my-cert_1 ").unwrap(), "my-cert_1");
+        }
+
+        #[test]
+        fn rejects_empty_id() {
+            let err = required_id("id", "   ").unwrap_err();
+            assert!(matches!(err, ConvertError::Required("id")), "{err}");
+        }
+
+        #[test]
+        fn rejects_parent_dir_component() {
+            let err = required_id("id", "../x").unwrap_err();
+            assert!(
+                err.to_string().contains("must not contain path separators"),
+                "{err}"
+            );
+        }
+
+        #[test]
+        fn rejects_forward_slash() {
+            required_id("id", "a/b").unwrap_err();
+        }
+
+        #[test]
+        fn rejects_backslash() {
+            required_id("id", "a\\b").unwrap_err();
+        }
+
+        #[test]
+        fn rejects_absolute_path() {
+            required_id("id", "/etc/x").unwrap_err();
+        }
+    }
+
+    mod coerced_rsa_keylength {
+        use super::*;
+
+        #[test]
+        fn reports_out_of_range_rsa_length() {
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::RSA, Some(3072)),
+                Some(3072)
+            );
+        }
+
+        #[test]
+        fn in_range_rsa_length_is_not_coerced() {
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::RSA, Some(2048)),
+                None
+            );
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::RSA, Some(4096)),
+                None
+            );
+        }
+
+        #[test]
+        fn none_length_is_not_coerced() {
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::RSA, None),
+                None
+            );
+        }
+
+        #[test]
+        fn non_rsa_key_type_is_never_coerced() {
+            // Even an out-of-range value is ignored for a key type whose length
+            // is irrelevant.
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::P256, Some(3072)),
+                None
+            );
+            assert_eq!(
+                super::super::coerced_rsa_keylength(&KeyType::Ed25519, Some(1024)),
+                None
+            );
         }
     }
 
@@ -1273,15 +1444,21 @@ mod tests {
 
         #[test]
         fn empty_optionals_round_trip_to_empty_buffers() {
+            // A signer is set (the entry needs at least one output mode, R4); the
+            // recipient stays blank to prove an unset optional round-trips empty.
             let original = CmsForm {
                 id: "cms1".to_string(),
                 data_file: "msg.txt".to_string(),
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
                 ..CmsForm::default()
             };
             let cms = cms_from_form(&original).unwrap();
             let restored = cms_to_form(&cms);
             assert_eq!(restored.recipient, "");
-            assert_eq!(restored.signer.cert_pem_file, "");
+            assert_eq!(restored.signer.cert_pem_file, "c.pem");
             assert!(!restored.detached);
         }
     }

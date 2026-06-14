@@ -548,6 +548,11 @@ pub fn save_file_with_extension<P: AsRef<Path>>(
     extension: &str,
     data: &[u8],
 ) -> Result<PathBuf, io::Error> {
+    // Defense in depth: reject a traversal-bearing filename before writing so a
+    // config that bypasses the TUI boundary cannot escape `path`. The canonical
+    // user-facing check lives in src/tui/convert.rs.
+    crate::secure_file::reject_unsafe_path_component(filename)?;
+
     let dir_path = path.as_ref();
     if !dir_path.exists() {
         fs::create_dir_all(dir_path)?;
@@ -1841,5 +1846,38 @@ mod tests {
         assert!(!cms_der.is_empty());
         assert!(!pkcs7_der.is_empty());
         assert_ne!(cms_der, pkcs7_der, "CMS and PKCS7 data should be different");
+    }
+
+    mod save_file_with_extension {
+        use super::*;
+
+        #[test]
+        fn writes_a_normal_filename_inside_the_dir() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let out = save_file_with_extension(dir.path(), "result", "cms", b"data")
+                .expect("normal filename writes");
+            assert_eq!(out, dir.path().join("result.cms"));
+            assert!(out.exists(), "file should be written");
+        }
+
+        #[test]
+        fn rejects_parent_traversal_and_writes_nothing() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            save_file_with_extension(dir.path(), "../evil", "cms", b"data").unwrap_err();
+            // Nothing escaped the directory.
+            assert!(!dir.path().parent().unwrap().join("evil.cms").exists());
+        }
+
+        #[test]
+        fn rejects_absolute_path() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            save_file_with_extension(dir.path(), "/tmp/evil", "cms", b"data").unwrap_err();
+        }
+
+        #[test]
+        fn rejects_path_separator() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            save_file_with_extension(dir.path(), "sub/evil", "cms", b"data").unwrap_err();
+        }
     }
 }

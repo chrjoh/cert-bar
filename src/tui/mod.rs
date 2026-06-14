@@ -573,9 +573,21 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
                     return;
                 }
                 let n = certs.len();
+                // Detect any RSA key length the {2048,4096} selector cannot
+                // represent *before* the forward mapper silently coerces it to
+                // index 0 (R2). The detector only reports; the warning is folded
+                // into the success line below so the user sees the load
+                // succeeded but is told the value will change on regenerate.
+                let coerced = certs
+                    .iter()
+                    .find_map(|cert| convert::coerced_rsa_keylength(&cert.keytype, cert.keylength));
                 let forms: Vec<app::CertForm> = certs.iter().map(convert::cert_to_form).collect();
                 app.load_cert_list(forms);
-                app.set_success(format!("Loaded {n} certificate(s) from {path}"));
+                let base = format!("Loaded {n} certificate(s) from {path}");
+                // Fold the warning into the success status (a visible footer
+                // surface) rather than the transient `set_error` slot, so the
+                // load-succeeded context is preserved alongside the warning.
+                app.set_success(with_rsa_coercion_warning(base, coerced));
             }
             Err(e) => app.set_error_popup(format!("Not a valid certificate config: {e}")),
         },
@@ -586,6 +598,13 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
                     app.set_error_popup("CSR config has no entries");
                     return;
                 }
+                // Only the generate-mode entry carries a key length; sign-mode
+                // signing requests have none. Detect a coercion on the loaded
+                // generate csr (R2).
+                let coerced = data
+                    .csrs
+                    .first()
+                    .and_then(|csr| convert::coerced_rsa_keylength(&csr.keytype, csr.keylength));
                 let form = if let Some(csr) = data.csrs.first() {
                     convert::csr_to_form(csr)
                 } else {
@@ -593,7 +612,8 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
                     convert::signing_request_to_form(&data.to_sign[0])
                 };
                 app.load_csr(form);
-                app.set_success(format!("Loaded 1 of {total} CSR entries from {path}"));
+                let base = format!("Loaded 1 of {total} CSR entries from {path}");
+                app.set_success(with_rsa_coercion_warning(base, coerced));
             }
             Err(e) => app.set_error_popup(format!("Not a valid CSR config: {e}")),
         },
@@ -622,6 +642,28 @@ fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
         // The browser is never opened in load mode on the menu, so this is
         // unreachable in practice; treat as a no-op for totality.
         Screen::Menu => {}
+    }
+}
+
+/// Appends a visible RSA key-length coercion warning to a load success message
+/// when `coerced` is `Some(original_len)`.
+///
+/// The RSA length selector is a fixed `{2048, 4096}` cycler (the first option,
+/// 2048, is the coerced default). A loaded length outside that set would be
+/// silently downgraded by the reverse mapper, so this surfaces the data loss to
+/// the user (R2) instead of letting it happen silently. The base success line is
+/// kept verbatim when there is nothing to warn about, so the no-coercion path is
+/// byte-for-byte unchanged.
+fn with_rsa_coercion_warning(base: String, coerced: Option<u32>) -> String {
+    match coerced {
+        Some(original) => {
+            let default = app::RSA_KEY_LENGTH_OPTIONS[0];
+            format!(
+                "{base} — warning: RSA key length {original} is not selectable; \
+                 it will be saved/regenerated as {default}"
+            )
+        }
+        None => base,
     }
 }
 
@@ -1910,6 +1952,10 @@ mod tests {
             let mut form = app::CmsForm::default();
             form.id = "msg".to_string();
             form.data_file = "data.bin".to_string();
+            // A CMS entry now needs at least one output mode (R4); give it a
+            // recipient so the fixture is valid without changing the test's
+            // intent (loading the first entry and reporting the count).
+            form.recipient = "rcpt.pem".to_string();
             let cms = convert::cms_from_form(&form).expect("cms maps");
             config::write_cms_config(vec![cms], &yaml).expect("write");
 
@@ -1937,6 +1983,9 @@ mod tests {
             let mut form = app::CmsForm::default();
             form.id = "msg".to_string();
             form.data_file = "data.bin".to_string();
+            // Needs an output mode to be a valid CMS entry (R4); a recipient
+            // keeps the fixture valid while still exercising the shape mismatch.
+            form.recipient = "rcpt.pem".to_string();
             let cms = convert::cms_from_form(&form).expect("cms maps");
             config::write_cms_config(vec![cms], &yaml).expect("write");
 
@@ -1978,6 +2027,110 @@ mod tests {
             let popup = app.error_popup.as_deref().expect("popup on empty config");
             assert_eq!(popup, "Certificate config has no entries");
             assert!(app.status.is_none(), "no success for an empty config");
+        }
+
+        #[test]
+        fn cert_with_unsupported_rsa_keylength_warns_on_load() {
+            // Setup: a valid RSA certificate config whose key length (3072) is
+            // not in the {2048,4096} selector. `cert_to_form` would silently
+            // coerce it to index 0, so the load must surface a visible warning.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("rsa3072.yaml");
+            let mut form = app::CertForm::default(); // defaults to RSA
+            form.id = "rsa".to_string();
+            form.common_name = "RSA".to_string();
+            let mut cert = convert::cert_from_form(&form).expect("forward map");
+            cert.keytype = config::KeyType::RSA;
+            cert.keylength = Some(3072);
+            config::write_certificate_config(vec![cert], &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Cert, &path);
+
+            // Expect: the load succeeds (no popup) but the success line carries a
+            // visible warning naming 3072 and the coerced default (2048).
+            assert!(
+                app.error_popup.is_none(),
+                "an out-of-range length is not a hard error"
+            );
+            let status = app.status.as_deref().expect("success status set");
+            assert!(
+                status.starts_with(&format!("Loaded 1 certificate(s) from {path}")),
+                "the load-succeeded text is preserved, got: {status}"
+            );
+            assert!(
+                status.contains("3072") && status.contains("2048"),
+                "the warning should name the loaded length and the coerced default, got: {status}"
+            );
+            assert!(
+                status.contains("not selectable"),
+                "the warning should explain the value is not selectable, got: {status}"
+            );
+            assert_eq!(app.status_kind(), StatusKind::Success);
+        }
+
+        #[test]
+        fn cert_with_supported_rsa_keylength_has_no_warning() {
+            // A 4096 length is in the selector, so the message is the plain
+            // success line with no warning suffix (no-coercion path unchanged).
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("rsa4096.yaml");
+            let mut form = app::CertForm::default();
+            form.id = "rsa".to_string();
+            form.common_name = "RSA".to_string();
+            form.key_length = app::RSA_KEY_LENGTH_OPTIONS
+                .iter()
+                .position(|&n| n == 4096)
+                .expect("4096 is a selectable option");
+            let cert = convert::cert_from_form(&form).expect("forward map");
+            config::write_certificate_config(vec![cert], &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            load_config_into_app(&mut app, Screen::Cert, &path);
+
+            let status = app.status.as_deref().expect("success status set");
+            assert_eq!(status, &format!("Loaded 1 certificate(s) from {path}"));
+            assert!(
+                !status.contains("warning"),
+                "a supported length must not produce a warning, got: {status}"
+            );
+        }
+
+        #[test]
+        fn csr_with_unsupported_rsa_keylength_warns_on_load() {
+            // Setup: a generate-mode CSR config with an out-of-range RSA length.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("csr1024.yaml");
+            let mut form = app::CsrForm::default(); // defaults to RSA, generate mode
+            form.id = "web".to_string();
+            form.common_name = "web.example".to_string();
+            let mut data = convert::csr_from_form(&form).expect("forward map");
+            data.csrs[0].keytype = config::KeyType::RSA;
+            data.csrs[0].keylength = Some(1024);
+            config::write_csr_config(data, &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Csr, &path);
+
+            // Expect: a visible warning naming 1024 and the coerced default 2048.
+            assert!(app.error_popup.is_none());
+            let status = app.status.as_deref().expect("success status set");
+            assert!(
+                status.starts_with(&format!("Loaded 1 of 1 CSR entries from {path}")),
+                "the load-succeeded text is preserved, got: {status}"
+            );
+            assert!(
+                status.contains("1024") && status.contains("2048"),
+                "the warning should name the loaded length and the coerced default, got: {status}"
+            );
         }
     }
 

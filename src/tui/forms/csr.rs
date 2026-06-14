@@ -18,10 +18,12 @@
 //! | 10  | valid to         | text input (sign mode, optional)|
 //! | 11  | CA               | boolean toggle (sign mode)      |
 //! | 12  | key length       | text input (RSA only)           |
+//! | 13  | signer cert pem  | text input (sign mode, path)    |
+//! | 14  | signer key pem   | text input (sign mode, path)    |
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 use super::widgets::{
     cycler_row, header, multiselect_rows, note_row, optional_text_row, render_form, text_row,
@@ -89,8 +91,6 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &
     ));
     let after_usage = lines.len();
     lines.extend([
-        key_length_row,
-        text_row("alt names", &form.altnames, f == 8, theme),
         toggle_row(
             "sign mode",
             form.sign_mode,
@@ -98,27 +98,57 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, theme: &
             f == 7,
             theme,
         ),
+        text_row("alt names", &form.altnames, f == 8, theme),
+        key_length_row,
         Line::from(""),
         header("Signing request (sign mode)", theme),
         optional_text_row("csr pem", &form.csr_pem_file, f == 9, theme),
         optional_text_row("valid to", &form.valid_to, f == 10, theme),
         toggle_row("CA", form.ca, "is CA", f == 11, theme),
+        path_row(
+            "signer cert pem",
+            &form.signer.cert_pem_file,
+            f == 13,
+            theme,
+        ),
+        path_row(
+            "signer key pem",
+            &form.signer.private_key_pem_file,
+            f == 14,
+            theme,
+        ),
     ]);
 
     // Line index of the focused field (see cert.rs). Rows after the usage group
-    // are: key length, alt names, sign mode, blank, header, csr pem, valid to, CA.
+    // are, in order: sign mode (7), alt names (8), key length (12), blank,
+    // header, csr pem (9), valid to (10), CA (11), signer cert pem (13),
+    // signer key pem (14).
     let active_line = match f {
         0..=5 => f,
         6 => usage_start + form.usage_cursor.min(usage_len.saturating_sub(1)),
-        12 => after_usage,     // key length
+        7 => after_usage,      // sign mode
         8 => after_usage + 1,  // alt names
-        7 => after_usage + 2,  // sign mode
+        12 => after_usage + 2, // key length
         9 => after_usage + 5,  // csr pem (after blank + header)
         10 => after_usage + 6, // valid to
-        _ => after_usage + 7,  // field 11 (CA)
+        11 => after_usage + 7, // CA
+        13 => after_usage + 8, // signer cert pem
+        _ => after_usage + 9,  // field 14 (signer key pem)
     };
 
     render_form(frame, area, "CSR", lines, active_line, app, theme);
+}
+
+/// A path-input row: an [`optional_text_row`] with a right-side muted
+/// `(Ctrl+O to browse)` hint appended only when the row is focused, so the user
+/// learns the browse affordance exactly when it applies. The hint is built from
+/// `theme.muted()` (no literal colors). Mirrors `cert.rs::path_row`.
+fn path_row(label: &str, value: &str, active: bool, theme: &Theme) -> Line<'static> {
+    let mut line = optional_text_row(label, value, active, theme);
+    if active {
+        line.push_span(Span::styled("  (Ctrl+O to browse)", theme.muted()));
+    }
+    line
 }
 
 #[cfg(test)]
@@ -128,8 +158,12 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn render_to_string(app: &App) -> String {
+        render_sized(app, 60, 24)
+    }
+
+    fn render_sized(app: &App, w: u16, h: u16) -> String {
         let theme = Theme::dark();
-        let backend = TestBackend::new(60, 24);
+        let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).expect("backend");
         terminal
             .draw(|frame| render(frame, frame.area(), &app.csr, app, &theme))
@@ -165,5 +199,54 @@ mod tests {
         app.csr.csr_pem_file = "req.pem".to_string();
         let out = render_to_string(&app);
         assert!(out.contains("req.pem"));
+    }
+
+    #[test]
+    fn signer_cert_and_key_pem_rows_render() {
+        // Tall enough that the bottom signer rows are visible without relying
+        // on scroll-to-active.
+        let app = csr_app();
+        let out = render_sized(&app, 60, 40);
+        assert!(
+            out.contains("signer cert pem"),
+            "signer cert pem row (field 13) renders"
+        );
+        assert!(
+            out.contains("signer key pem"),
+            "signer key pem row (field 14) renders"
+        );
+    }
+
+    #[test]
+    fn shows_typed_signer_key_value() {
+        let mut app = csr_app();
+        app.csr.signer.private_key_pem_file = "ca.key".to_string();
+        let out = render_sized(&app, 60, 40);
+        assert!(
+            out.contains("ca.key"),
+            "signer key buffer (field 14) should render"
+        );
+    }
+
+    #[test]
+    fn browse_hint_shows_on_focused_signer_key_field() {
+        let mut app = csr_app();
+        app.csr.field = 14; // signer key pem (path)
+        let out = render_sized(&app, 60, 40);
+        assert!(
+            out.contains("Ctrl+O"),
+            "focused signer path row shows the browse hint"
+        );
+    }
+
+    #[test]
+    fn browse_hint_absent_on_non_path_field() {
+        let mut app = csr_app();
+        app.csr.field = 0; // id (not a path)
+        let out = render_sized(&app, 60, 40);
+        assert!(
+            !out.contains("Ctrl+O"),
+            "non-path rows do not show the browse hint"
+        );
     }
 }

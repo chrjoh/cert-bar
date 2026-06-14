@@ -525,7 +525,13 @@ impl App {
             // selection in range even if a form grows.
             // Cert: 14 fields (0..=13), including the new signer key pem at 13.
             Screen::Cert => 14,
-            Screen::Csr => 13,
+            // Csr: 15 fields (0..=14). 0..=12 unchanged; 13 = signer cert pem,
+            // 14 = signer private-key pem (mirrors Cert's 12/13). These make
+            // sign-mode CSR signers reachable by Up/Down, typing and Ctrl+O.
+            Screen::Csr => 15,
+            // Crl: the 3 fixed text fields are `field` 0..=2. Revoked rows are
+            // *not* counted here; they are addressed by `selected_row` and
+            // reached by stepping past field 2 (see `move_down`/`move_up`).
             Screen::Crl => 3,
             Screen::Cms => 5,
             Screen::Menu => 0,
@@ -921,7 +927,8 @@ impl App {
     /// using the same field-index routing as the `*_text_field` helpers:
     ///
     /// - **Cert**: 12 `signer.cert_pem_file`, 13 `signer.private_key_pem_file`.
-    /// - **Csr**: 9 `csr_pem_file`.
+    /// - **Csr**: 9 `csr_pem_file`, 13 `signer.cert_pem_file`,
+    ///   14 `signer.private_key_pem_file`.
     /// - **Crl**: 1 `signer.cert_pem_file`, 2 `signer.private_key_pem_file`.
     /// - **Cms**: 1 `data_file`, 2 `recipient`, 3 `signer.cert_pem_file`,
     ///   4 `signer.private_key_pem_file`.
@@ -939,6 +946,8 @@ impl App {
             }
             Screen::Csr => match target.field {
                 9 => Some(&mut self.csr.csr_pem_file),
+                13 => Some(&mut self.csr.signer.cert_pem_file),
+                14 => Some(&mut self.csr.signer.private_key_pem_file),
                 _ => None,
             },
             Screen::Crl => match target.field {
@@ -975,6 +984,8 @@ impl App {
             }
             Screen::Csr => match target.field {
                 9 => &self.csr.csr_pem_file,
+                13 => &self.csr.signer.cert_pem_file,
+                14 => &self.csr.signer.private_key_pem_file,
                 _ => "",
             },
             Screen::Crl => match target.field {
@@ -1042,6 +1053,22 @@ impl App {
             self.cert_index = self.cert_index.saturating_sub(1);
             return;
         }
+        // CRL revoked-table navigation (R3): while a revoked row is selected,
+        // focus is "in the table" (encoded by `selected_row.is_some()`, with
+        // `field` parked at the last fixed field 2). Up retreats the selected
+        // row; Up from row 0 leaves the table back into the fixed fields.
+        if self.screen == Screen::Crl
+            && self.focus == Focus::Form
+            && let Some(idx) = self.crl.selected_row
+        {
+            if idx == 0 {
+                self.crl.selected_row = None;
+                self.crl.field = 2;
+            } else {
+                self.crl.selected_row = Some(idx - 1);
+            }
+            return;
+        }
         if let Some(field) = self.active_field_mut() {
             *field = field.saturating_sub(1);
         }
@@ -1061,6 +1088,29 @@ impl App {
                 self.cert_index += 1;
             }
             return;
+        }
+        // CRL revoked-table navigation (R3). The 3 fixed text fields are
+        // `field` 0..=2; the revoked rows live "below" field 2 and are
+        // addressed by `selected_row` (NOT counted in `active_field_count`).
+        // Encoding: a row is focused iff `selected_row.is_some()`; `field` is
+        // parked at 2 while in the table so the fixed-field state is preserved
+        // for when the user steps back up. Down past field 2 enters the table
+        // at row 0; subsequent Downs advance `selected_row` to the last row.
+        if self.screen == Screen::Crl && self.focus == Focus::Form {
+            let row_count = self.crl.revoked.len();
+            match self.crl.selected_row {
+                None if self.crl.field == 2 && row_count > 0 => {
+                    self.crl.selected_row = Some(0);
+                    return;
+                }
+                Some(idx) => {
+                    if idx + 1 < row_count {
+                        self.crl.selected_row = Some(idx + 1);
+                    }
+                    return;
+                }
+                None => {}
+            }
         }
         let max = self.active_field_count().saturating_sub(1);
         if let Some(field) = self.active_field_mut()
@@ -1216,6 +1266,9 @@ impl App {
         match self.screen {
             Screen::Cert => cert_text_field(self.cert_mut()),
             Screen::Csr => csr_text_field(&mut self.csr),
+            // While a revoked row is selected, focus is in the table (not on a
+            // fixed text field), so typing/clear must not touch field 0..=2.
+            Screen::Crl if self.crl.selected_row.is_some() => None,
             Screen::Crl => crl_text_field(&mut self.crl),
             Screen::Cms => cms_text_field(&mut self.cms),
             Screen::Menu => None,
@@ -1323,9 +1376,9 @@ impl App {
     /// Path fields, by screen and field index (matching the `*_text_field`
     /// routing):
     /// - **Cert**: 12 `signer.cert_pem_file`, 13 `signer.private_key_pem_file`.
-    /// - **Csr**: 9 `csr_pem_file` (the cheap CSR coverage requested by the
-    ///   plan; the inline CSR signer is not a distinct focusable text field in
-    ///   the current form layout).
+    /// - **Csr**: 9 `csr_pem_file`, 13 `signer.cert_pem_file`,
+    ///   14 `signer.private_key_pem_file` (the sign-mode signer paths, mirroring
+    ///   Cert's 12/13).
     /// - **Crl**: 1 `signer.cert_pem_file`, 2 `signer.private_key_pem_file`.
     /// - **Cms**: 1 `data_file`, 2 `recipient`, 3 `signer.cert_pem_file`,
     ///   4 `signer.private_key_pem_file`.
@@ -1341,7 +1394,13 @@ impl App {
                 let f = self.cert().field;
                 (f, matches!(f, 12 | 13))
             }
-            Screen::Csr => (self.csr.field, self.csr.field == 9),
+            // Csr path fields: 9 (`csr_pem_file`) plus the sign-mode signer
+            // paths 13 (`signer.cert_pem_file`) and 14
+            // (`signer.private_key_pem_file`), mirroring Cert's 12/13.
+            Screen::Csr => (self.csr.field, matches!(self.csr.field, 9 | 13 | 14)),
+            // While a revoked row is selected, focus is in the table, not on a
+            // fixed path field — no browseable path is focused.
+            Screen::Crl if self.crl.selected_row.is_some() => return None,
             Screen::Crl => (self.crl.field, matches!(self.crl.field, 1 | 2)),
             Screen::Cms => (self.cms.field, matches!(self.cms.field, 1..=4)),
             Screen::Menu => return None,
@@ -1508,6 +1567,9 @@ fn csr_text_field(form: &mut CsrForm) -> Option<&mut String> {
         9 => &mut form.csr_pem_file,
         10 => &mut form.valid_to,
         // 11 ca toggle, 12 key_length (cycler)
+        // 13/14: sign-mode signer paths, mirroring Cert's 12/13.
+        13 => &mut form.signer.cert_pem_file,
+        14 => &mut form.signer.private_key_pem_file,
         _ => return None,
     })
 }
@@ -1723,6 +1785,202 @@ mod tests {
         app.crl.selected_row = Some(0);
         app.update(Message::DeleteRow);
         assert_eq!(app.crl.revoked.len(), 1);
+    }
+
+    // --- R1: CSR signer fields (13/14) routing ----------------------------
+
+    fn csr_app() -> App {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Csr;
+        app.focus = Focus::Form;
+        app
+    }
+
+    #[test]
+    fn csr_field_13_routes_typed_chars_into_signer_cert_pem() {
+        let mut app = csr_app();
+        app.csr.field = 13;
+        app.update(Message::Char('c'));
+        app.update(Message::Char('a'));
+        assert_eq!(app.csr.signer.cert_pem_file, "ca");
+        assert!(
+            app.csr.signer.private_key_pem_file.is_empty(),
+            "the key buffer must be untouched"
+        );
+        app.update(Message::Backspace);
+        assert_eq!(app.csr.signer.cert_pem_file, "c");
+    }
+
+    #[test]
+    fn csr_field_14_routes_typed_chars_into_signer_private_key_pem() {
+        let mut app = csr_app();
+        app.csr.field = 14;
+        app.update(Message::Char('k'));
+        app.update(Message::Char('y'));
+        assert_eq!(app.csr.signer.private_key_pem_file, "ky");
+        assert!(
+            app.csr.signer.cert_pem_file.is_empty(),
+            "the cert buffer must be untouched"
+        );
+    }
+
+    #[test]
+    fn csr_signer_fields_are_browseable_path_targets() {
+        let mut app = csr_app();
+        app.csr.field = 13;
+        assert_eq!(
+            app.focused_path_field(),
+            Some(BrowseTarget {
+                screen: Screen::Csr,
+                field: 13,
+            })
+        );
+        app.csr.field = 14;
+        assert_eq!(
+            app.focused_path_field(),
+            Some(BrowseTarget {
+                screen: Screen::Csr,
+                field: 14,
+            })
+        );
+        // The original csr_pem_file path field is still browseable.
+        app.csr.field = 9;
+        assert!(app.focused_path_field().is_some());
+    }
+
+    #[test]
+    fn csr_apply_path_writes_into_signer_buffers() {
+        let mut app = csr_app();
+        app.apply_path(
+            BrowseTarget {
+                screen: Screen::Csr,
+                field: 13,
+            },
+            "/tmp/ca.pem".to_string(),
+        );
+        app.apply_path(
+            BrowseTarget {
+                screen: Screen::Csr,
+                field: 14,
+            },
+            "/tmp/ca.key".to_string(),
+        );
+        assert_eq!(app.csr.signer.cert_pem_file, "/tmp/ca.pem");
+        assert_eq!(app.csr.signer.private_key_pem_file, "/tmp/ca.key");
+    }
+
+    #[test]
+    fn csr_down_reaches_field_14() {
+        let mut app = csr_app();
+        app.csr.field = 0;
+        // 14 Downs from field 0 reach field 14 (0..=14 => 15 fields).
+        for _ in 0..14 {
+            app.update(Message::Down);
+        }
+        assert_eq!(app.csr.field, 14, "active_field_count must allow 0..=14");
+        // Further Down is clamped at the last field.
+        app.update(Message::Down);
+        assert_eq!(app.csr.field, 14);
+    }
+
+    // --- R3: CRL revoked-row navigation -----------------------------------
+
+    fn crl_app_with_rows(n: usize) -> App {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Crl;
+        app.focus = Focus::Form;
+        for _ in 0..n {
+            app.update(Message::AddRow);
+        }
+        app
+    }
+
+    #[test]
+    fn crl_down_past_last_fixed_field_enters_revoked_table() {
+        let mut app = crl_app_with_rows(2);
+        // AddRow leaves selected_row at the last row; reset to fixed fields to
+        // exercise navigation from the top.
+        app.crl.selected_row = None;
+        app.crl.field = 0;
+        // Step through the 3 fixed fields 0..=2.
+        app.update(Message::Down); // -> 1
+        app.update(Message::Down); // -> 2
+        assert_eq!(app.crl.field, 2);
+        assert_eq!(app.crl.selected_row, None);
+        // Down past field 2 enters the table at row 0.
+        app.update(Message::Down);
+        assert_eq!(app.crl.selected_row, Some(0));
+        // Next Down advances to row 1 (the last row).
+        app.update(Message::Down);
+        assert_eq!(app.crl.selected_row, Some(1));
+        // Further Down is clamped at the last row.
+        app.update(Message::Down);
+        assert_eq!(app.crl.selected_row, Some(1));
+    }
+
+    #[test]
+    fn crl_up_retreats_rows_then_returns_to_fixed_fields() {
+        let mut app = crl_app_with_rows(2);
+        app.crl.selected_row = Some(1);
+        app.crl.field = 2;
+        // Up retreats within the table.
+        app.update(Message::Up);
+        assert_eq!(app.crl.selected_row, Some(0));
+        // Up from row 0 leaves the table back to the last fixed field.
+        app.update(Message::Up);
+        assert_eq!(app.crl.selected_row, None);
+        assert_eq!(app.crl.field, 2);
+        // Continued Up steps the fixed fields.
+        app.update(Message::Up);
+        assert_eq!(app.crl.field, 1);
+    }
+
+    #[test]
+    fn crl_down_into_empty_table_stays_on_fixed_field() {
+        let mut app = crl_app_with_rows(0);
+        app.crl.field = 2;
+        app.crl.selected_row = None;
+        app.update(Message::Down);
+        // No rows to enter; selection stays None and field stays at 2.
+        assert_eq!(app.crl.selected_row, None);
+        assert_eq!(app.crl.field, 2);
+    }
+
+    #[test]
+    fn crl_right_cycles_only_the_selected_rows_reason() {
+        let mut app = crl_app_with_rows(2);
+        // Select row 0 and cycle its reason; row 1 must stay untouched.
+        app.crl.selected_row = Some(0);
+        let row1_before = app.crl.revoked[1].reason;
+        app.update(Message::Right);
+        assert_eq!(
+            app.crl.revoked[0].reason,
+            1 % REASON_OPTIONS.len(),
+            "selected row 0's reason advances"
+        );
+        assert_eq!(
+            app.crl.revoked[1].reason, row1_before,
+            "non-selected row 1 is untouched"
+        );
+        // Now select row 1 and cycle it; row 0 must stay where it was.
+        let row0_after = app.crl.revoked[0].reason;
+        app.crl.selected_row = Some(1);
+        app.update(Message::Right);
+        assert_eq!(app.crl.revoked[1].reason, 1 % REASON_OPTIONS.len());
+        assert_eq!(app.crl.revoked[0].reason, row0_after);
+    }
+
+    #[test]
+    fn crl_typing_does_not_edit_fixed_field_while_row_selected() {
+        let mut app = crl_app_with_rows(1);
+        app.crl.field = 2; // private_key_pem fixed field
+        app.crl.selected_row = Some(0);
+        app.update(Message::Char('x'));
+        assert!(
+            app.crl.signer.private_key_pem_file.is_empty(),
+            "typing must not edit the fixed field while a row is selected"
+        );
+        assert!(app.focused_path_field().is_none());
     }
 
     #[test]

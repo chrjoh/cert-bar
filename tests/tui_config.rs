@@ -1087,12 +1087,25 @@ mod convert {
 
         #[test]
         fn test_cms_blank_optionals_none() {
-            // signer/recipient blank -> None; detached has no "unset" so it is
-            // Some(false) when off (matches convert contract).
-            let cms = cms_from_form(&base()).unwrap();
+            // A CMS entry now needs at least one output mode (R4), so give it a
+            // recipient to keep the fixture valid. The test's original intent is
+            // preserved: a blank *signer* still round-trips to None, and detached
+            // (which has no "unset") maps to Some(false) when off.
+            let mut form = base();
+            form.recipient = "rcpt.pem".to_string();
+            let cms = cms_from_form(&form).unwrap();
             assert_eq!(cms.signer, None);
-            assert_eq!(cms.recipient, None);
+            assert_eq!(cms.recipient, Some("rcpt.pem".to_string()));
             assert_eq!(cms.detached, Some(false));
+        }
+
+        #[test]
+        fn test_cms_no_output_mode_is_rejected() {
+            // R4: an entry with neither a recipient (encrypt) nor a signer (sign)
+            // must fail loudly at the convert boundary rather than report a false
+            // "Generated 1 CMS" with no file written.
+            let err = cms_from_form(&base()).unwrap_err();
+            assert!(err.contains("at least a recipient"), "{err}");
         }
 
         #[test]

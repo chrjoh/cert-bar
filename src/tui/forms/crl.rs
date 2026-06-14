@@ -133,6 +133,27 @@ mod tests {
             .collect()
     }
 
+    /// Renders and returns the buffer as one `String` per terminal row, so a
+    /// test can assert which physical line carries the `> ` selection marker.
+    fn render_to_lines(app: &App) -> Vec<String> {
+        let theme = Theme::dark();
+        let w = 70u16;
+        let h = 24u16;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        terminal
+            .draw(|frame| render(frame, frame.area(), &app.crl, app, &theme))
+            .expect("draw");
+        let content: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        content.chunks(w as usize).map(|row| row.concat()).collect()
+    }
+
     fn crl_app() -> App {
         let mut app = App::new("./out".to_string());
         app.screen = crate::tui::app::Screen::Crl;
@@ -161,5 +182,40 @@ mod tests {
         let out = render_to_string(&app);
         assert!(out.contains("ab:cd"), "serial should render");
         assert!(out.contains('>'), "selected row marker should render");
+    }
+
+    #[test]
+    fn highlights_a_non_last_selected_row() {
+        // Two revoked rows with the FIRST selected proves earlier rows (not just
+        // the most-recently-added last row) can be the highlighted/selected row.
+        let mut app = crl_app();
+        app.crl.revoked.push(RevokedRow {
+            serial: "aa:aa".to_string(),
+            reason: 0,
+        });
+        app.crl.revoked.push(RevokedRow {
+            serial: "bb:bb".to_string(),
+            reason: 0,
+        });
+        app.crl.selected_row = Some(0);
+
+        let lines = render_to_lines(&app);
+        let first = lines
+            .iter()
+            .find(|l| l.contains("aa:aa"))
+            .expect("first revoked row should render");
+        let second = lines
+            .iter()
+            .find(|l| l.contains("bb:bb"))
+            .expect("second revoked row should render");
+
+        assert!(
+            first.contains("> aa:aa"),
+            "the selected (first) row carries the '> ' marker, got: {first:?}"
+        );
+        assert!(
+            !second.contains("> bb:bb"),
+            "the non-selected (second) row has no marker, got: {second:?}"
+        );
     }
 }

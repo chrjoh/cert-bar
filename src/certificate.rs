@@ -61,10 +61,15 @@ impl CertificateSaver for RealCertificateSaver {
         path: &str,
         id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Defense in depth: reject a traversal-bearing id before writing so a
+        // config that bypasses the TUI boundary cannot escape `path`. The
+        // canonical user-facing check lives in src/tui/convert.rs.
+        crate::secure_file::reject_unsafe_path_component(id)?;
         cert.cert.save(path, id)?;
         // Generated private keys are written world-readable by default; restrict
-        // them to owner-only so other local users can't read them.
-        crate::secure_file::harden_private_key(path, id);
+        // them to owner-only so other local users can't read them. Surface a
+        // chmod failure rather than reporting a false success.
+        crate::secure_file::harden_private_key(path, id)?;
         Ok(())
     }
 }
