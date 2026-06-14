@@ -97,7 +97,7 @@ impl FromKeyType for CHKeyType {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum Usage {
     certsign,
     crlsign,
@@ -206,7 +206,7 @@ pub struct CsrData {
     pub to_sign: Vec<SigningRequest>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum Reason {
     Unspecified,
     KeyCompromise,

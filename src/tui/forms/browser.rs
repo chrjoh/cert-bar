@@ -18,11 +18,27 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::tui::app::FileBrowser;
+use crate::tui::app::{BrowsePurpose, FileBrowser};
 use crate::tui::theme::Theme;
 
-/// Footer hint shown inside the popup.
-const FOOTER_HINT: &str = "↑↓ move · Enter open/select · Del/c clear · Backspace up · Esc cancel";
+/// Footer hint shown inside the popup when filling a path field
+/// ([`BrowsePurpose::FillField`]): advertises the clear affordance.
+const FILL_HINT: &str = "↑↓ move · Enter open/select · Del/c clear · Backspace up · Esc cancel";
+
+/// Footer hint shown inside the popup when loading a config file
+/// ([`BrowsePurpose::LoadConfig`]): `Enter` loads, and there is nothing to clear
+/// so the `Del/c clear` affordance is omitted.
+const LOAD_HINT: &str = "↑↓ move · Enter load · Backspace up · Esc cancel";
+
+/// Picks the purpose-aware footer hint so the user can tell which mode the
+/// browser is in. Meaning is carried by the text (NO_COLOR safe); the style is
+/// always [`Theme::muted`].
+fn hint_for(purpose: &BrowsePurpose) -> &'static str {
+    match purpose {
+        BrowsePurpose::FillField(_) => FILL_HINT,
+        BrowsePurpose::LoadConfig(_) => LOAD_HINT,
+    }
+}
 
 /// Message shown when the popup is too small to host the listing.
 const TOO_SMALL: &str = "Terminal too small to browse — type the path instead";
@@ -87,7 +103,7 @@ pub fn render(frame: &mut Frame, area: Rect, browser: &FileBrowser, theme: &Them
     state.select(selected);
     frame.render_stateful_widget(list, body, &mut state);
 
-    let hint = Paragraph::new(FOOTER_HINT).style(theme.muted());
+    let hint = Paragraph::new(hint_for(&browser.purpose)).style(theme.muted());
     frame.render_widget(hint, footer);
 }
 
@@ -109,13 +125,19 @@ fn entry_item<'a>(name: &str, is_dir: bool, theme: &Theme) -> ListItem<'a> {
     ]))
 }
 
-/// Builds the popup title ` Browse — <current dir> `, truncating long paths from
-/// the left (keeping the tail) so the directory you are in stays visible.
+/// Builds the popup title, purpose-aware: ` Load config — <current dir> ` when
+/// the browser is open in [`BrowsePurpose::LoadConfig`] mode, otherwise
+/// ` Browse — <current dir> ` for [`BrowsePurpose::FillField`]. The directory is
+/// truncated from the left (keeping the tail) so the directory you are in stays
+/// visible regardless of which prefix is used.
 fn browser_title(browser: &FileBrowser, popup_width: u16) -> String {
     let dir = browser.current_dir.to_string_lossy();
     // Budget = popup width minus the thick borders (2) and the fixed
-    // ` Browse —  ` chrome around the path.
-    let prefix = " Browse — ";
+    // ` <prefix> —  ` chrome around the path.
+    let prefix = match browser.purpose {
+        BrowsePurpose::LoadConfig(_) => " Load config — ",
+        BrowsePurpose::FillField(_) => " Browse — ",
+    };
     let chrome = prefix.chars().count() + 1 /* trailing space */ + 2 /* borders */;
     let budget = (popup_width as usize).saturating_sub(chrome);
     let dir = truncate_left(&dir, budget);
@@ -159,14 +181,28 @@ mod tests {
     use std::path::PathBuf;
 
     fn browser_with(dir: &str, entries: Vec<FileEntry>, selected: usize) -> FileBrowser {
+        browser_with_purpose(
+            dir,
+            entries,
+            selected,
+            BrowsePurpose::FillField(BrowseTarget {
+                screen: Screen::Cert,
+                field: 12,
+            }),
+        )
+    }
+
+    fn browser_with_purpose(
+        dir: &str,
+        entries: Vec<FileEntry>,
+        selected: usize,
+        purpose: BrowsePurpose,
+    ) -> FileBrowser {
         FileBrowser {
             current_dir: PathBuf::from(dir),
             entries,
             selected,
-            target: BrowseTarget {
-                screen: Screen::Cert,
-                field: 12,
-            },
+            purpose,
         }
     }
 
@@ -235,11 +271,47 @@ mod tests {
         // width before we assert on it.
         let text = render_to_string(120, 20, &browser);
         assert!(text.contains("> "), "selection marker present: {text}");
-        assert!(text.contains(FOOTER_HINT), "footer hint present: {text}");
+        assert!(text.contains(FILL_HINT), "footer hint present: {text}");
         // The footer must advertise the clear/none affordance (Del or `c`).
         assert!(
             text.contains("Del/c clear"),
             "clear hint present in footer: {text}"
+        );
+    }
+
+    #[test]
+    fn load_mode_shows_load_title_and_hint() {
+        let browser = browser_with_purpose(
+            "/home/user/certs",
+            vec![entry("..", true), entry("config.yaml", false)],
+            0,
+            BrowsePurpose::LoadConfig(Screen::Cert),
+        );
+        // Wide terminal so neither the title nor the footer hint is truncated.
+        let text = render_to_string(120, 20, &browser);
+        assert!(
+            text.contains("Load config"),
+            "load-mode title present: {text}"
+        );
+        assert!(
+            text.contains("Enter load"),
+            "load-mode hint present: {text}"
+        );
+        // Load mode has nothing to clear, so the clear affordance is omitted.
+        assert!(
+            !text.contains("Del/c clear"),
+            "clear hint omitted in load mode: {text}"
+        );
+    }
+
+    #[test]
+    fn fill_mode_shows_browse_title() {
+        let browser = browser_with("/home/user/certs", vec![entry("..", true)], 0);
+        let text = render_to_string(120, 20, &browser);
+        assert!(text.contains("Browse"), "fill-mode title present: {text}");
+        assert!(
+            !text.contains("Load config"),
+            "load title absent in fill mode: {text}"
         );
     }
 

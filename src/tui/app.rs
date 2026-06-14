@@ -329,6 +329,30 @@ pub struct BrowseTarget {
     pub field: usize,
 }
 
+/// Why the file-browser overlay is open.
+///
+/// The browser serves two distinct intents, modeled as a single sum type so the
+/// [`FileBrowser`] is always exactly one purpose and the file-confirm arm of
+/// [`App::update_browser`] is one exhaustive `match`:
+///
+/// - [`BrowsePurpose::FillField`] — write the chosen path into a form path field
+///   (the `Ctrl+O` behavior). Carries the [`BrowseTarget`] to write back into.
+/// - [`BrowsePurpose::LoadConfig`] — parse the chosen file as `screen`'s config
+///   type and load it into the form(s) (the `Ctrl+L` behavior). Carries the
+///   [`Screen`] whose config type the file is parsed as.
+///
+/// The purpose is preserved across directory re-listings by threading it through
+/// [`Effect::ReadDir`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowsePurpose {
+    /// Write the chosen path into the form path field identified by the target
+    /// (today's `Ctrl+O` behavior).
+    FillField(BrowseTarget),
+    /// Parse the chosen file as the given screen's config type and load it into
+    /// the form(s) (the `Ctrl+L` behavior).
+    LoadConfig(Screen),
+}
+
 /// A single directory listing row held by the [`FileBrowser`].
 ///
 /// Produced by the directory reader in `mod.rs` (the impure `std::fs::read_dir`
@@ -348,8 +372,8 @@ pub struct FileEntry {
 ///
 /// Held by [`App::browser`] as an `Option`, orthogonal to the confirm
 /// [`Dialog`]. Opened with `Ctrl+O` while a browseable path field is focused
-/// (see [`App::focused_path_field`]); the chosen path is written back into the
-/// field identified by [`FileBrowser::target`].
+/// (see [`App::focused_path_field`]) to fill that field, or with `Ctrl+L` to
+/// load a config file; which one is recorded in [`FileBrowser::purpose`].
 ///
 /// The directory contents in [`FileBrowser::entries`] are loaded by the impure
 /// `Effect::ReadDir` handler in `mod.rs`, which calls back
@@ -365,8 +389,8 @@ pub struct FileBrowser {
     pub entries: Vec<FileEntry>,
     /// The highlighted entry index, clamped to `entries`.
     pub selected: usize,
-    /// Which form field the chosen path is written back into.
-    pub target: BrowseTarget,
+    /// Why the browser is open (fill a path field, or load a config file).
+    pub purpose: BrowsePurpose,
 }
 
 /// The complete TUI model. Rendering reads this; [`App::update`] mutates it.
@@ -578,6 +602,13 @@ pub enum Message {
     /// [`Effect::ReadDir`] so the event loop reads the entries and calls back
     /// [`App::set_browser_entries`]. (Mapped to `Ctrl+O` by mod.rs.)
     OpenBrowser,
+    /// Open the file-browser overlay to pick a YAML config file to load into the
+    /// active screen's form(s). A no-op on [`Screen::Menu`] (no active config
+    /// type). Like [`Message::OpenBrowser`] the directory read is impure, so the
+    /// reducer returns an [`Effect::ReadDir`] carrying a
+    /// [`BrowsePurpose::LoadConfig`]; the eventual file selection yields an
+    /// [`Effect::LoadConfig`]. (Mapped to `Ctrl+L` by mod.rs.)
+    LoadConfig,
 }
 
 /// The outcome of a confirm dialog being accepted, returned by [`App::update`]
@@ -608,8 +639,22 @@ pub enum Effect {
     ReadDir {
         /// The directory to list.
         path: std::path::PathBuf,
-        /// The field the eventual chosen path returns into.
-        target: BrowseTarget,
+        /// Why the browser is open; preserved across re-listings so the eventual
+        /// file selection knows whether to fill a field or load a config.
+        purpose: BrowsePurpose,
+    },
+    /// Parse the file at `path` as `screen`'s config type and install the
+    /// resulting form state on the [`App`]. The impure read (`read_*_config`),
+    /// the reverse-mapping into form structs and the install via the pure
+    /// `App::load_*` setters all live in `mod.rs::run_effect`; the reducer only
+    /// models the request (returned when a file is confirmed in
+    /// [`BrowsePurpose::LoadConfig`] mode). On a read/parse error or empty
+    /// config the handler routes a message to the error popup.
+    LoadConfig {
+        /// Which screen's config type the file is parsed as.
+        screen: Screen,
+        /// The config file to read.
+        path: String,
     },
 }
 
@@ -664,6 +709,7 @@ impl App {
             Message::ClearForm => self.clear_form(),
             Message::ClearAll => self.clear_all(),
             Message::OpenBrowser => return self.open_browser(),
+            Message::LoadConfig => return self.open_load_browser(),
         }
         None
     }
@@ -727,7 +773,37 @@ impl App {
         let target = self.focused_path_field()?;
         let current = self.path_field_value(target);
         let path = initial_browse_dir(current);
-        Some(Effect::ReadDir { path, target })
+        Some(Effect::ReadDir {
+            path,
+            purpose: BrowsePurpose::FillField(target),
+        })
+    }
+
+    /// Opens the file browser to pick a config file to **load** into the active
+    /// screen's form(s), returning an [`Effect::ReadDir`] carrying a
+    /// [`BrowsePurpose::LoadConfig`] so the event loop reads the initial
+    /// directory. A no-op (returns `None`) on [`Screen::Menu`], where no config
+    /// type is active.
+    ///
+    /// The initial directory is [`App::output_dir`] itself (a likely place to
+    /// find a saved config). Unlike [`App::open_browser`] — which is seeded from
+    /// a file-*path* field and so strips the last component — load mode lists the
+    /// directory directly. The reducer performs no filesystem I/O: it only
+    /// requests the listing.
+    fn open_load_browser(&mut self) -> Option<Effect> {
+        if self.screen == Screen::Menu {
+            return None;
+        }
+        let dir = self.output_dir.trim();
+        let path = if dir.is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            std::path::PathBuf::from(dir)
+        };
+        Some(Effect::ReadDir {
+            path,
+            purpose: BrowsePurpose::LoadConfig(self.screen),
+        })
     }
 
     /// Pure reducer for browser navigation, dispatched while
@@ -758,46 +834,60 @@ impl App {
                 None
             }
             Message::Confirm => {
-                let target = browser.target;
+                let purpose = browser.purpose;
                 match browser.entries.get(browser.selected) {
                     Some(entry) if entry.is_dir => {
                         // Descend into the selected directory (or `..`). The
                         // reader resolves `..` against `current_dir` and
-                        // re-lists; we just request the join.
+                        // re-lists; we just request the join, preserving the
+                        // purpose across the re-listing.
                         let path = browser.current_dir.join(&entry.name);
-                        Some(Effect::ReadDir { path, target })
+                        Some(Effect::ReadDir { path, purpose })
                     }
                     Some(entry) => {
-                        // A file: write its full path into the target and close.
+                        // A file: act on it according to the browser's purpose.
                         let path = browser.current_dir.join(&entry.name);
                         let path = path.to_string_lossy().into_owned();
                         self.browser = None;
-                        self.apply_path(target, path);
-                        None
+                        match purpose {
+                            // Fill mode: write the path into the target field.
+                            BrowsePurpose::FillField(target) => {
+                                self.apply_path(target, path);
+                                None
+                            }
+                            // Load mode: request the (impure) config read.
+                            BrowsePurpose::LoadConfig(screen) => {
+                                Some(Effect::LoadConfig { screen, path })
+                            }
+                        }
                     }
                     None => None,
                 }
             }
             Message::Backspace => {
-                let target = browser.target;
+                let purpose = browser.purpose;
                 // Go up one level; no-op at a filesystem root.
                 let parent = browser.current_dir.parent()?.to_path_buf();
                 Some(Effect::ReadDir {
                     path: parent,
-                    target,
+                    purpose,
                 })
             }
             Message::Back | Message::Quit => {
                 self.browser = None;
                 None
             }
-            // "Clear / none": pick no file. Empties the target path field and
-            // closes the browser. `c` is the letter shortcut; `ClearField` is
-            // the Delete mapping (both routed here by mod.rs while browsing).
+            // "Clear / none": pick no file. In fill mode this empties the target
+            // path field and closes the browser. In load mode there is no target
+            // to clear, so it simply closes. `c` is the letter shortcut;
+            // `ClearField` is the Delete mapping (both routed here by mod.rs
+            // while browsing).
             Message::ClearField | Message::Char('c') => {
-                let target = browser.target;
+                let purpose = browser.purpose;
                 self.browser = None;
-                self.apply_path(target, String::new());
+                if let BrowsePurpose::FillField(target) = purpose {
+                    self.apply_path(target, String::new());
+                }
                 None
             }
             _ => None,
@@ -812,13 +902,13 @@ impl App {
         &mut self,
         dir: std::path::PathBuf,
         entries: Vec<FileEntry>,
-        target: BrowseTarget,
+        purpose: BrowsePurpose,
     ) {
         self.browser = Some(FileBrowser {
             current_dir: dir,
             entries,
             selected: 0,
-            target,
+            purpose,
         });
     }
 
@@ -1167,6 +1257,59 @@ impl App {
     pub fn set_error_popup(&mut self, msg: impl Into<String>) {
         self.error_popup = Some(msg.into());
         self.status = None;
+    }
+
+    /// Installs a freshly loaded set of certificate entries, replacing the whole
+    /// `cert_list`. Called by the [`Effect::LoadConfig`] handler in `mod.rs`
+    /// after reverse-mapping a certificate config into form structs. Resets
+    /// `cert_index` to `0`, switches to the Cert screen and focuses the form so
+    /// the user lands on the first loaded entry.
+    ///
+    /// The caller guarantees `forms` is non-empty (an empty config is reported
+    /// as an error before this is called); the `cert_list` never-empty invariant
+    /// is preserved by replacing only with a non-empty vector. Defensive: a stray
+    /// empty vector is replaced with a single default entry.
+    pub fn load_cert_list(&mut self, forms: Vec<CertForm>) {
+        self.cert_list = if forms.is_empty() {
+            vec![CertForm::default()]
+        } else {
+            forms
+        };
+        self.cert_index = 0;
+        self.screen = Screen::Cert;
+        self.focus = Focus::Form;
+    }
+
+    /// Installs a freshly loaded CSR form, replacing `self.csr`. Switches to the
+    /// CSR screen and focuses the form. Called by the [`Effect::LoadConfig`]
+    /// handler in `mod.rs`.
+    pub fn load_csr(&mut self, form: CsrForm) {
+        self.csr = form;
+        self.screen = Screen::Csr;
+        self.focus = Focus::Form;
+    }
+
+    /// Installs a freshly loaded CRL form, replacing `self.crl`. Switches to the
+    /// CRL screen and focuses the form. The loaded form's `selected_row` is
+    /// clamped into range (or cleared when there are no revoked rows). Called by
+    /// the [`Effect::LoadConfig`] handler in `mod.rs`.
+    pub fn load_crl(&mut self, form: CrlForm) {
+        self.crl = form;
+        self.crl.selected_row = match self.crl.selected_row {
+            Some(idx) if !self.crl.revoked.is_empty() => Some(idx.min(self.crl.revoked.len() - 1)),
+            _ => None,
+        };
+        self.screen = Screen::Crl;
+        self.focus = Focus::Form;
+    }
+
+    /// Installs a freshly loaded CMS form, replacing `self.cms`. Switches to the
+    /// CMS screen and focuses the form. Called by the [`Effect::LoadConfig`]
+    /// handler in `mod.rs`.
+    pub fn load_cms(&mut self, form: CmsForm) {
+        self.cms = form;
+        self.screen = Screen::Cms;
+        self.focus = Focus::Form;
     }
 
     /// Returns a [`BrowseTarget`] when the currently focused field is a
@@ -1871,20 +2014,22 @@ mod tests {
         }
     }
 
+    /// A `FillField` purpose for the given (screen, field) — the common test
+    /// shape replacing the old bare `BrowseTarget`.
+    fn fill(screen: Screen, field: usize) -> BrowsePurpose {
+        BrowsePurpose::FillField(BrowseTarget { screen, field })
+    }
+
     #[test]
     fn open_browser_on_path_field_requests_read_dir() {
         let mut app = cert_app();
         app.cert_mut().field = 12; // signer cert pem (path field)
         let effect = app.update(Message::OpenBrowser);
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
         assert_eq!(
             effect,
             Some(Effect::ReadDir {
                 path: PathBuf::from("."),
-                target,
+                purpose: fill(Screen::Cert, 12),
             })
         );
         // The reducer requested the listing but performed no I/O / no install.
@@ -1901,10 +2046,7 @@ mod tests {
             effect,
             Some(Effect::ReadDir {
                 path: PathBuf::from("/etc/certs"),
-                target: BrowseTarget {
-                    screen: Screen::Cert,
-                    field: 12,
-                },
+                purpose: fill(Screen::Cert, 12),
             })
         );
     }
@@ -1921,33 +2063,26 @@ mod tests {
     #[test]
     fn set_browser_entries_installs_and_resets_selection() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
+        let purpose = fill(Screen::Cert, 12);
         app.set_browser_entries(
             PathBuf::from("/tmp"),
             vec![dir(".."), file("a.pem")],
-            target,
+            purpose,
         );
         let browser = app.browser.as_ref().unwrap();
         assert_eq!(browser.current_dir, PathBuf::from("/tmp"));
         assert_eq!(browser.entries.len(), 2);
         assert_eq!(browser.selected, 0);
-        assert_eq!(browser.target, target);
+        assert_eq!(browser.purpose, purpose);
     }
 
     #[test]
     fn browser_up_down_clamp_selection() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
         app.set_browser_entries(
             PathBuf::from("/tmp"),
             vec![dir(".."), dir("ca"), file("a.pem")],
-            target,
+            fill(Screen::Cert, 12),
         );
         app.update(Message::Down);
         assert_eq!(app.browser.as_ref().unwrap().selected, 1);
@@ -1964,21 +2099,18 @@ mod tests {
     #[test]
     fn browser_enter_on_dir_requests_read_dir() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
+        let purpose = fill(Screen::Cert, 12);
         app.set_browser_entries(
             PathBuf::from("/tmp"),
             vec![dir("ca"), file("a.pem")],
-            target,
+            purpose,
         );
         let effect = app.update(Message::Confirm);
         assert_eq!(
             effect,
             Some(Effect::ReadDir {
                 path: PathBuf::from("/tmp/ca"),
-                target,
+                purpose,
             })
         );
         // Still open: the descended listing arrives via set_browser_entries.
@@ -1988,18 +2120,15 @@ mod tests {
     #[test]
     fn browser_enter_on_parent_requests_read_dir() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cms,
-            field: 1,
-        };
+        let purpose = fill(Screen::Cms, 1);
         app.screen = Screen::Cms;
-        app.set_browser_entries(PathBuf::from("/tmp/sub"), vec![dir("..")], target);
+        app.set_browser_entries(PathBuf::from("/tmp/sub"), vec![dir("..")], purpose);
         let effect = app.update(Message::Confirm);
         assert_eq!(
             effect,
             Some(Effect::ReadDir {
                 path: PathBuf::from("/tmp/sub/.."),
-                target,
+                purpose,
             })
         );
     }
@@ -2008,14 +2137,10 @@ mod tests {
     fn browser_enter_on_file_applies_path_and_closes() {
         let mut app = cert_app();
         app.cert_mut().field = 13; // signer key pem
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 13,
-        };
         app.set_browser_entries(
             PathBuf::from("/keys"),
             vec![dir(".."), file("root_key.pem")],
-            target,
+            fill(Screen::Cert, 13),
         );
         app.update(Message::Down); // select the file
         let effect = app.update(Message::Confirm);
@@ -2027,17 +2152,14 @@ mod tests {
     #[test]
     fn browser_backspace_requests_parent() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
-        app.set_browser_entries(PathBuf::from("/tmp/sub"), vec![file("a.pem")], target);
+        let purpose = fill(Screen::Cert, 12);
+        app.set_browser_entries(PathBuf::from("/tmp/sub"), vec![file("a.pem")], purpose);
         let effect = app.update(Message::Backspace);
         assert_eq!(
             effect,
             Some(Effect::ReadDir {
                 path: PathBuf::from("/tmp"),
-                target,
+                purpose,
             })
         );
     }
@@ -2045,11 +2167,7 @@ mod tests {
     #[test]
     fn browser_backspace_at_root_is_noop() {
         let mut app = cert_app();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
-        app.set_browser_entries(PathBuf::from("/"), vec![dir("etc")], target);
+        app.set_browser_entries(PathBuf::from("/"), vec![dir("etc")], fill(Screen::Cert, 12));
         let effect = app.update(Message::Backspace);
         assert!(effect.is_none());
         assert!(app.browser.is_some());
@@ -2059,11 +2177,11 @@ mod tests {
     fn browser_esc_closes_without_writing_and_without_quitting() {
         let mut app = cert_app();
         app.cert_mut().field = 12;
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
-        app.set_browser_entries(PathBuf::from("/tmp"), vec![file("a.pem")], target);
+        app.set_browser_entries(
+            PathBuf::from("/tmp"),
+            vec![file("a.pem")],
+            fill(Screen::Cert, 12),
+        );
         let effect = app.update(Message::Back);
         assert!(effect.is_none());
         assert!(app.browser.is_none());
@@ -2197,11 +2315,11 @@ mod tests {
         let mut app = cert_app();
         app.cert_mut().field = 12;
         app.cert_mut().signer.cert_pem_file = "/old/cert.pem".to_string();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 12,
-        };
-        app.set_browser_entries(PathBuf::from("/tmp"), vec![file("a.pem")], target);
+        app.set_browser_entries(
+            PathBuf::from("/tmp"),
+            vec![file("a.pem")],
+            fill(Screen::Cert, 12),
+        );
         let effect = app.update(Message::ClearField);
         assert!(effect.is_none());
         assert!(app.browser.is_none());
@@ -2213,14 +2331,169 @@ mod tests {
         let mut app = cert_app();
         app.cert_mut().field = 13;
         app.cert_mut().signer.private_key_pem_file = "/old/key.pem".to_string();
-        let target = BrowseTarget {
-            screen: Screen::Cert,
-            field: 13,
-        };
-        app.set_browser_entries(PathBuf::from("/keys"), vec![file("k.pem")], target);
+        app.set_browser_entries(
+            PathBuf::from("/keys"),
+            vec![file("k.pem")],
+            fill(Screen::Cert, 13),
+        );
         let effect = app.update(Message::Char('c'));
         assert!(effect.is_none());
         assert!(app.browser.is_none());
         assert_eq!(app.cert().signer.private_key_pem_file, "");
+    }
+
+    // --- load mode (Ctrl+L) -----------------------------------------------
+
+    #[test]
+    fn load_config_message_opens_load_browser_on_form_screen() {
+        let mut app = cert_app(); // Screen::Cert
+        let effect = app.update(Message::LoadConfig);
+        assert_eq!(
+            effect,
+            Some(Effect::ReadDir {
+                path: PathBuf::from("./out"),
+                purpose: BrowsePurpose::LoadConfig(Screen::Cert),
+            })
+        );
+        // The reducer requested the listing but installed nothing yet.
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn load_config_message_is_noop_on_menu() {
+        let mut app = App::new("./out".to_string()); // Screen::Menu
+        let effect = app.update(Message::LoadConfig);
+        assert!(effect.is_none());
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn browser_enter_on_file_in_load_mode_returns_load_config_effect() {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Csr;
+        app.focus = Focus::Form;
+        app.set_browser_entries(
+            PathBuf::from("/cfg"),
+            vec![dir(".."), file("csr.yaml")],
+            BrowsePurpose::LoadConfig(Screen::Csr),
+        );
+        app.update(Message::Down); // select the file
+        let effect = app.update(Message::Confirm);
+        assert_eq!(
+            effect,
+            Some(Effect::LoadConfig {
+                screen: Screen::Csr,
+                path: "/cfg/csr.yaml".to_string(),
+            })
+        );
+        // The browser closes; the impure read happens in the effect handler.
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn browser_enter_on_dir_in_load_mode_preserves_purpose() {
+        let mut app = cert_app();
+        app.set_browser_entries(
+            PathBuf::from("/cfg"),
+            vec![dir("sub"), file("c.yaml")],
+            BrowsePurpose::LoadConfig(Screen::Cert),
+        );
+        let effect = app.update(Message::Confirm);
+        assert_eq!(
+            effect,
+            Some(Effect::ReadDir {
+                path: PathBuf::from("/cfg/sub"),
+                purpose: BrowsePurpose::LoadConfig(Screen::Cert),
+            })
+        );
+        assert!(app.browser.is_some());
+    }
+
+    #[test]
+    fn browser_clear_in_load_mode_just_closes() {
+        let mut app = cert_app();
+        app.set_browser_entries(
+            PathBuf::from("/cfg"),
+            vec![file("c.yaml")],
+            BrowsePurpose::LoadConfig(Screen::Cert),
+        );
+        let effect = app.update(Message::ClearField);
+        assert!(effect.is_none());
+        assert!(app.browser.is_none(), "load mode clear just closes");
+    }
+
+    // --- load_* install setters -------------------------------------------
+
+    #[test]
+    fn load_cert_list_replaces_list_and_resets_index() {
+        let mut app = App::new("./out".to_string());
+        // Pre-existing multi-entry state with a stale index.
+        app.cert_list = vec![CertForm::default(), CertForm::default()];
+        app.cert_index = 1;
+        app.focus = Focus::Menu;
+
+        let a = CertForm {
+            id: "ca".to_string(),
+            ..CertForm::default()
+        };
+        let b = CertForm {
+            id: "leaf".to_string(),
+            ..CertForm::default()
+        };
+        app.load_cert_list(vec![a, b]);
+
+        assert_eq!(app.cert_list.len(), 2);
+        assert_eq!(app.cert_list[0].id, "ca");
+        assert_eq!(app.cert_list[1].id, "leaf");
+        assert_eq!(app.cert_index, 0);
+        assert_eq!(app.screen, Screen::Cert);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_cert_list_with_empty_keeps_one_default_entry() {
+        let mut app = App::new("./out".to_string());
+        app.load_cert_list(Vec::new());
+        assert_eq!(app.cert_list.len(), 1);
+        assert_eq!(app.cert_index, 0);
+    }
+
+    #[test]
+    fn load_csr_replaces_form_and_focuses_form() {
+        let mut app = App::new("./out".to_string());
+        let form = CsrForm {
+            id: "req".to_string(),
+            ..CsrForm::default()
+        };
+        app.load_csr(form);
+        assert_eq!(app.csr.id, "req");
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_crl_replaces_form_and_clamps_selected_row() {
+        let mut app = App::new("./out".to_string());
+        let form = CrlForm {
+            crl_file: "out.crl".to_string(),
+            revoked: vec![RevokedRow::default()],
+            selected_row: Some(5), // out of range
+            ..CrlForm::default()
+        };
+        app.load_crl(form);
+        assert_eq!(app.crl.crl_file, "out.crl");
+        assert_eq!(app.crl.selected_row, Some(0), "clamped into range");
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_cms_replaces_form_and_focuses_form() {
+        let mut app = App::new("./out".to_string());
+        let form = CmsForm {
+            id: "msg".to_string(),
+            ..CmsForm::default()
+        };
+        app.load_cms(form);
+        assert_eq!(app.cms.id, "msg");
+        assert_eq!(app.focus, Focus::Form);
     }
 }

@@ -1724,8 +1724,8 @@ mod generation {
 #[cfg(feature = "tui")]
 mod reducer {
     use cert_bar::tui::app::{
-        App, BrowseTarget, CertForm, ConfirmAction, Dialog, Effect, FileEntry, Focus, Message,
-        Screen,
+        App, BrowsePurpose, BrowseTarget, CertForm, ConfirmAction, Dialog, Effect, FileEntry,
+        Focus, Message, Screen,
     };
 
     /// An `App` parked on the Cert screen with the form focused.
@@ -1734,6 +1734,12 @@ mod reducer {
         app.screen = Screen::Cert;
         app.focus = Focus::Form;
         app
+    }
+
+    /// Wraps a `(screen, field)` into the `FillField` purpose that replaced the
+    /// old bare `BrowseTarget` on `Effect::ReadDir` / `set_browser_entries`.
+    fn fill(screen: Screen, field: usize) -> BrowsePurpose {
+        BrowsePurpose::FillField(BrowseTarget { screen, field })
     }
 
     // --- #1/#2/#3 — Generate / Save confirm dialog funnel ------------------
@@ -2172,11 +2178,11 @@ mod reducer {
             // Setup: a browser is open, then a failure popup opens on top.
             let mut app = cert_app();
             app.cert_mut().field = 12; // signer.cert_pem_file (a path field)
-            let target = BrowseTarget {
-                screen: Screen::Cert,
-                field: 12,
-            };
-            app.set_browser_entries(PathBuf::from("/tmp"), vec![file("a.pem")], target);
+            app.set_browser_entries(
+                PathBuf::from("/tmp"),
+                vec![file("a.pem")],
+                fill(Screen::Cert, 12),
+            );
             app.set_error_popup("boom");
 
             // Invoke: Down is intercepted by the popup, not the browser.
@@ -2295,11 +2301,11 @@ mod reducer {
             app.focus = Focus::Form;
             app.cms.field = 1;
             app.cms.data_file = "/tmp/old".to_string();
-            let target = BrowseTarget {
-                screen: Screen::Cms,
-                field: 1,
-            };
-            app.set_browser_entries(PathBuf::from("/tmp"), vec![file("a.bin")], target);
+            app.set_browser_entries(
+                PathBuf::from("/tmp"),
+                vec![file("a.bin")],
+                fill(Screen::Cms, 1),
+            );
 
             // Invoke.
             let effect = app.update(Message::ClearField);
@@ -2318,11 +2324,11 @@ mod reducer {
             app.focus = Focus::Form;
             app.cms.field = 1;
             app.cms.data_file = "/tmp/old".to_string();
-            let target = BrowseTarget {
-                screen: Screen::Cms,
-                field: 1,
-            };
-            app.set_browser_entries(PathBuf::from("/tmp"), vec![file("a.bin")], target);
+            app.set_browser_entries(
+                PathBuf::from("/tmp"),
+                vec![file("a.bin")],
+                fill(Screen::Cms, 1),
+            );
 
             let effect = app.update(Message::Char('c'));
 
@@ -2341,11 +2347,11 @@ mod reducer {
             app.cms.data_file = "/tmp/data".to_string();
             app.cms.recipient = "/tmp/rcpt.pem".to_string();
             app.cms.field = 2; // recipient
-            let target = BrowseTarget {
-                screen: Screen::Cms,
-                field: 2,
-            };
-            app.set_browser_entries(PathBuf::from("/tmp"), vec![file("rcpt.pem")], target);
+            app.set_browser_entries(
+                PathBuf::from("/tmp"),
+                vec![file("rcpt.pem")],
+                fill(Screen::Cms, 2),
+            );
 
             // Invoke.
             app.update(Message::ClearField);
@@ -2361,14 +2367,10 @@ mod reducer {
             // Regression: clear handling did not break browser navigation.
             let mut app = cert_app();
             app.cert_mut().field = 12;
-            let target = BrowseTarget {
-                screen: Screen::Cert,
-                field: 12,
-            };
             app.set_browser_entries(
                 PathBuf::from("/tmp"),
                 vec![file("a.pem"), file("b.pem")],
-                target,
+                fill(Screen::Cert, 12),
             );
 
             app.update(Message::Down);
@@ -2415,10 +2417,7 @@ mod reducer {
                 effect,
                 Some(Effect::ReadDir {
                     path: PathBuf::from("."),
-                    target: BrowseTarget {
-                        screen: Screen::Cert,
-                        field: 12,
-                    },
+                    purpose: fill(Screen::Cert, 12),
                 })
             );
         }
@@ -2438,11 +2437,7 @@ mod reducer {
         /// Opens the browser and loads a listing into it.
         fn open_with_entries(dir: &str, entries: Vec<FileEntry>) -> App {
             let mut app = app_on_cert_signer_field();
-            let target = BrowseTarget {
-                screen: Screen::Cert,
-                field: 12,
-            };
-            app.set_browser_entries(PathBuf::from(dir), entries, target);
+            app.set_browser_entries(PathBuf::from(dir), entries, fill(Screen::Cert, 12));
             app
         }
 
@@ -2494,10 +2489,7 @@ mod reducer {
                 effect,
                 Some(Effect::ReadDir {
                     path: PathBuf::from("/tmp/base").join("ca"),
-                    target: BrowseTarget {
-                        screen: Screen::Cert,
-                        field: 12,
-                    },
+                    purpose: fill(Screen::Cert, 12),
                 })
             );
             assert!(app.browser.is_some());
@@ -2530,14 +2522,10 @@ mod reducer {
             // Setup: the target field has a prior value.
             let mut app = app_on_cert_signer_field();
             app.cert_mut().signer.cert_pem_file = "prior.pem".to_string();
-            let target = BrowseTarget {
-                screen: Screen::Cert,
-                field: 12,
-            };
             app.set_browser_entries(
                 PathBuf::from("/tmp/base"),
                 vec![dir_entry(".."), file_entry("other.pem")],
-                target,
+                fill(Screen::Cert, 12),
             );
 
             // Invoke: Esc.
@@ -2563,10 +2551,7 @@ mod reducer {
                 effect,
                 Some(Effect::ReadDir {
                     path: PathBuf::from("/tmp/base"),
-                    target: BrowseTarget {
-                        screen: Screen::Cert,
-                        field: 12,
-                    },
+                    purpose: fill(Screen::Cert, 12),
                 })
             );
         }
@@ -2594,8 +2579,12 @@ mod reducer {
             assert_eq!(app.browser.as_ref().unwrap().selected, 2);
 
             // Invoke: load a fresh (shorter) listing.
-            let target = app.browser.as_ref().unwrap().target;
-            app.set_browser_entries(PathBuf::from("/tmp/base/ca"), vec![dir_entry("..")], target);
+            let purpose = app.browser.as_ref().unwrap().purpose;
+            app.set_browser_entries(
+                PathBuf::from("/tmp/base/ca"),
+                vec![dir_entry("..")],
+                purpose,
+            );
 
             // Expect: selection reset into range (top).
             assert_eq!(app.browser.as_ref().unwrap().selected, 0);
@@ -2608,14 +2597,10 @@ mod reducer {
             app.screen = Screen::Cms;
             app.focus = Focus::Form;
             app.cms.field = 1; // data_file
-            let target = BrowseTarget {
-                screen: Screen::Cms,
-                field: 1,
-            };
             app.set_browser_entries(
                 PathBuf::from("/tmp/data"),
                 vec![dir_entry(".."), file_entry("msg.txt")],
-                target,
+                fill(Screen::Cms, 1),
             );
             app.update(Message::Down); // select the file
             app.update(Message::Confirm);
@@ -2627,5 +2612,563 @@ mod reducer {
             assert_eq!(app.cms.data_file, expected);
             assert_eq!(app.browser, None);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group 5: load path (04-load-config) — gated behind `tui`
+//
+// Exercises the *inverse* (read) path through the public API only:
+//   `cert_bar::config::{read,write}_*_config` + `cert_bar::tui::convert::*_to_form`
+//   + the forward `*_from_form` + the `App::update` reducer / `App::load_*`
+//   setters.
+//
+// Two layers live here:
+//   (a) read -> reverse -> forward round-trips: write a config, read it back,
+//       reverse-map each entry into form state, forward-map it back, and assert
+//       the re-derived config equals the original on every observable field.
+//       Covers an Ed25519 cert (hashalg None) and a CRL whose revoked-row serial
+//       (a `BigUint`) must survive the hex round-trip.
+//   (b) reducer behaviour reachable from outside the crate: `Message::LoadConfig`
+//       on a form screen returns a `ReadDir` with a `LoadConfig` purpose and is a
+//       no-op on the menu; selecting a file in a `LoadConfig`-purpose browser
+//       yields `Effect::LoadConfig`; and the `load_*` install setters replace
+//       state (and `load_cert_list` resets the index).
+//
+// NOT covered here (and intentionally not duplicated): the impure
+// `load_config_into_app` read+install in `src/tui/mod.rs` is private and is
+// covered by developer-03's in-crate `#[cfg(test)]` tests, which assert the
+// pinned status/error strings — see `spec/features/04-load-config/test-plan.md`.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod load_round_trip {
+    use cert_bar::config::{
+        CertInfo, Certificate, Cms, Crl, Csr, CsrData, HashAlg, KeyType, Pkix, Reason, RevokedCert,
+        Signer, SigningRequest, Usage, read_certificate_config, read_cms_config, read_crl_config,
+        read_csr_config, write_certificate_config, write_cms_config, write_crl_config,
+        write_csr_config,
+    };
+    use cert_bar::tui::convert::{
+        cert_from_form, cert_to_form, cms_from_form, cms_to_form, crl_from_form, crl_to_form,
+        csr_from_form, csr_to_form, signing_request_to_form,
+    };
+    use num_bigint::BigUint;
+    use num_traits::Num;
+    use tempfile::TempDir;
+
+    fn temp_yaml(name: &str) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
+    }
+
+    /// `CsrData` has no `Debug`, so `unwrap_err()` cannot be used on its result;
+    /// extract the `Ok` value via `match`.
+    fn ok_csr(result: Result<CsrData, String>) -> CsrData {
+        match result {
+            Ok(data) => data,
+            Err(e) => panic!("expected Ok CsrData, got Err: {e}"),
+        }
+    }
+
+    // --- (a) read -> reverse -> forward round-trips ------------------------
+
+    #[test]
+    fn certificate_read_reverse_forward_round_trips() {
+        // Setup: a fully populated RSA cert written to YAML.
+        let original = Certificate {
+            id: "ca".to_string(),
+            parent: Some("ca".to_string()),
+            signer: Some(Signer {
+                cert_pem_file: "s_cert.pem".to_string(),
+                private_key_pem_file: "s_key.pem".to_string(),
+            }),
+            ca: Some(true),
+            pkix: Pkix {
+                commonname: "Root CA".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::RSA,
+            altnames: Some(vec!["a.com".to_string(), "b.com".to_string()]),
+            hashalg: Some(HashAlg::SHA384),
+            keylength: Some(4096),
+            validto: Some("2031-12-31".to_string()),
+            usage: Some(vec![Usage::certsign, Usage::crlsign]),
+        };
+        let (_dir, path) = temp_yaml("cert.yaml");
+        write_certificate_config(vec![original.clone()], &path).unwrap();
+
+        // Invoke: read -> reverse-map -> forward-map.
+        let read = read_certificate_config(&path).unwrap();
+        let form = cert_to_form(&read[0]);
+        let restored = cert_from_form(&form).unwrap();
+
+        // Expect: every observable field survives the full loop.
+        assert_eq!(restored.id, original.id);
+        assert_eq!(restored.parent, original.parent);
+        assert_eq!(restored.signer, original.signer);
+        assert_eq!(restored.ca, original.ca);
+        assert_eq!(restored.pkix.commonname, original.pkix.commonname);
+        assert_eq!(restored.pkix.country, original.pkix.country);
+        assert_eq!(restored.pkix.organization, original.pkix.organization);
+        assert_eq!(restored.keytype, original.keytype);
+        assert_eq!(restored.altnames, original.altnames);
+        assert_eq!(restored.hashalg, original.hashalg);
+        assert_eq!(restored.keylength, original.keylength);
+        assert_eq!(restored.validto, original.validto);
+        assert_eq!(
+            restored.usage.as_ref().map(Vec::len),
+            original.usage.as_ref().map(Vec::len)
+        );
+    }
+
+    #[test]
+    fn ed25519_certificate_round_trips_with_no_hashalg() {
+        // An Ed25519 cert has its hashing built in -> hashalg is None. The
+        // reverse mapper falls back to index 0 for the absent value; the forward
+        // mapper then re-omits hashalg for Ed25519, so None survives.
+        let original = Certificate {
+            id: "ed-leaf".to_string(),
+            parent: None,
+            signer: None,
+            ca: Some(false),
+            pkix: Pkix {
+                commonname: "Ed Leaf".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::Ed25519,
+            altnames: None,
+            hashalg: None,
+            keylength: None,
+            validto: None,
+            usage: None,
+        };
+        let (_dir, path) = temp_yaml("ed_cert.yaml");
+        write_certificate_config(vec![original.clone()], &path).unwrap();
+
+        let read = read_certificate_config(&path).unwrap();
+        let restored = cert_from_form(&cert_to_form(&read[0])).unwrap();
+
+        assert_eq!(restored.keytype, KeyType::Ed25519);
+        assert_eq!(restored.hashalg, None, "Ed25519 hashalg stays None");
+        assert_eq!(restored.altnames, None);
+        assert_eq!(restored.usage, None);
+        // The all-None optionals never resurrect as Some("").
+        assert_eq!(restored.parent, None);
+        assert_eq!(restored.signer, None);
+        assert_eq!(restored.validto, None);
+        // `ca` collapses None -> false on the way back (documented fallback);
+        // here the config carried Some(false), so it survives unchanged.
+        assert_eq!(restored.ca, Some(false));
+    }
+
+    #[test]
+    fn multi_certificate_round_trips_preserving_order() {
+        // Cert configs load *every* entry; the loop must preserve order/ids.
+        let ca = Certificate {
+            id: "rt-ca".to_string(),
+            parent: None,
+            signer: None,
+            ca: Some(true),
+            pkix: Pkix {
+                commonname: "Root CA".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::Ed25519,
+            altnames: None,
+            hashalg: None,
+            keylength: None,
+            validto: None,
+            usage: Some(vec![Usage::certsign]),
+        };
+        let leaf = Certificate {
+            id: "rt-leaf".to_string(),
+            parent: Some("rt-ca".to_string()),
+            signer: None,
+            ca: Some(false),
+            pkix: Pkix {
+                commonname: "Leaf".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::P256,
+            altnames: None,
+            hashalg: Some(HashAlg::SHA256),
+            keylength: None,
+            validto: None,
+            usage: None,
+        };
+        let (_dir, path) = temp_yaml("chain.yaml");
+        write_certificate_config(vec![ca, leaf], &path).unwrap();
+
+        let read = read_certificate_config(&path).unwrap();
+        let restored: Vec<Certificate> = read
+            .iter()
+            .map(|c| cert_from_form(&cert_to_form(c)).unwrap())
+            .collect();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].id, "rt-ca");
+        assert_eq!(restored[0].parent, None);
+        assert_eq!(restored[0].keytype, KeyType::Ed25519);
+        assert_eq!(restored[1].id, "rt-leaf");
+        assert_eq!(restored[1].parent, Some("rt-ca".to_string()));
+        assert_eq!(restored[1].keytype, KeyType::P256);
+    }
+
+    #[test]
+    fn csr_generate_entry_round_trips() {
+        // The first `csr` loads as a generate-mode form.
+        let csr = Csr {
+            id: "csr1".to_string(),
+            pkix: Pkix {
+                commonname: "Example".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::P256,
+            altnames: Some(vec!["a.com".to_string()]),
+            hashalg: Some(HashAlg::SHA256),
+            keylength: None,
+            usage: Some(vec![Usage::serverauth]),
+        };
+        let (_dir, path) = temp_yaml("csr_gen.yaml");
+        write_csr_config(
+            CsrData {
+                csrs: vec![csr.clone()],
+                to_sign: Vec::new(),
+            },
+            &path,
+        )
+        .unwrap();
+
+        let data = read_csr_config(&path).unwrap();
+        let form = csr_to_form(&data.csrs[0]);
+        let restored = ok_csr(csr_from_form(&form));
+
+        assert_eq!(restored.csrs.len(), 1);
+        assert!(restored.to_sign.is_empty());
+        let out = &restored.csrs[0];
+        assert_eq!(out.id, "csr1");
+        assert_eq!(out.pkix.commonname, "Example");
+        assert_eq!(out.keytype, KeyType::P256);
+        assert_eq!(out.altnames, Some(vec!["a.com".to_string()]));
+        assert_eq!(out.hashalg, Some(HashAlg::SHA256));
+        assert_eq!(out.usage.as_ref().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn csr_signing_request_round_trips_in_sign_mode() {
+        // A file with only `signing_requests` loads the first as a sign-mode form.
+        let req = SigningRequest {
+            csr_pem_file: "req.pem".to_string(),
+            signer: Signer {
+                cert_pem_file: "c.pem".to_string(),
+                private_key_pem_file: "k.pem".to_string(),
+            },
+            validto: Some("2030-01-01".to_string()),
+            ca: Some(true),
+        };
+        let (_dir, path) = temp_yaml("csr_sign.yaml");
+        write_csr_config(
+            CsrData {
+                csrs: Vec::new(),
+                to_sign: vec![req.clone()],
+            },
+            &path,
+        )
+        .unwrap();
+
+        let data = read_csr_config(&path).unwrap();
+        let form = signing_request_to_form(&data.to_sign[0]);
+        assert!(form.sign_mode, "a signing request loads in sign mode");
+        let restored = ok_csr(csr_from_form(&form));
+
+        assert!(restored.csrs.is_empty());
+        assert_eq!(restored.to_sign.len(), 1);
+        assert_eq!(restored.to_sign[0], req);
+    }
+
+    #[test]
+    fn crl_round_trips_revoked_serial_biguint() {
+        // The revoked-row serial is a `BigUint`; it must survive the
+        // hex-string round-trip (serialize -> read -> serial_hex -> parse).
+        let big = BigUint::from_str_radix("204a77d33809ab2f6524c7cda6ae22e1ce1e7ad9", 16).unwrap();
+        let one = BigUint::from(1u8);
+        let original = Crl {
+            crl_file: "out_crl.pem".to_string(),
+            signer: Signer {
+                cert_pem_file: "c.pem".to_string(),
+                private_key_pem_file: "k.pem".to_string(),
+            },
+            revoked: vec![
+                RevokedCert {
+                    cert_info: CertInfo {
+                        serial: big.clone(),
+                        reason: Reason::KeyCompromise,
+                    },
+                },
+                RevokedCert {
+                    cert_info: CertInfo {
+                        serial: one.clone(),
+                        reason: Reason::CaCompromise,
+                    },
+                },
+            ],
+        };
+        let (_dir, path) = temp_yaml("crl.yaml");
+        write_crl_config(original.clone(), &path).unwrap();
+
+        let read = read_crl_config(&path).unwrap();
+        let form = crl_to_form(&read);
+        let restored = crl_from_form(&form).unwrap();
+
+        assert_eq!(restored.crl_file, "out_crl.pem");
+        assert_eq!(restored.signer, original.signer);
+        assert_eq!(restored.revoked.len(), 2);
+        // The large serial and the tiny `1` both survive identically.
+        assert_eq!(restored.revoked[0].cert_info.serial, big);
+        assert_eq!(restored.revoked[1].cert_info.serial, one);
+        assert!(matches!(
+            restored.revoked[0].cert_info.reason,
+            Reason::KeyCompromise
+        ));
+        assert!(matches!(
+            restored.revoked[1].cert_info.reason,
+            Reason::CaCompromise
+        ));
+    }
+
+    #[test]
+    fn cms_first_entry_round_trips() {
+        // CMS is a single-entry form: the first entry loads.
+        let sign = Cms {
+            id: "sig".to_string(),
+            signer: Some(Signer {
+                cert_pem_file: "s_cert.pem".to_string(),
+                private_key_pem_file: "s_key.pem".to_string(),
+            }),
+            recipient: None,
+            data_file: "msg.txt".to_string(),
+            detached: Some(true),
+        };
+        let encrypt = Cms {
+            id: "enc".to_string(),
+            signer: None,
+            recipient: Some("rcpt.pem".to_string()),
+            data_file: "other.txt".to_string(),
+            detached: None,
+        };
+        let (_dir, path) = temp_yaml("cms.yaml");
+        write_cms_config(vec![sign.clone(), encrypt], &path).unwrap();
+
+        let read = read_cms_config(&path).unwrap();
+        let form = cms_to_form(&read[0]);
+        let restored = cms_from_form(&form).unwrap();
+
+        assert_eq!(restored.id, "sig");
+        assert_eq!(restored.data_file, "msg.txt");
+        assert_eq!(restored.signer, sign.signer);
+        assert_eq!(restored.recipient, None);
+        // `detached: None` would collapse to Some(false) on the way back, but the
+        // first entry carried Some(true), so it survives unchanged.
+        assert_eq!(restored.detached, Some(true));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group 6: load-path reducer behaviour at the integration boundary (tui-gated)
+//
+// The pure `App::update` funnels and `App::load_*` setters reachable from
+// outside the crate. The impure `load_config_into_app` (private to mod.rs) is
+// NOT exercised here — see Group 5's note and the feature test-plan.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod load_reducer {
+    use cert_bar::tui::app::{
+        App, BrowsePurpose, CertForm, CrlForm, CsrForm, Effect, FileEntry, Focus, Message,
+        RevokedRow, Screen,
+    };
+    use std::path::PathBuf;
+
+    fn file(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            is_dir: false,
+        }
+    }
+    fn dir(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            is_dir: true,
+        }
+    }
+
+    #[test]
+    fn load_config_on_form_screen_requests_load_purpose_listing() {
+        // Setup: parked on the CSR screen, form focused.
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Csr;
+        app.focus = Focus::Form;
+
+        // Invoke: Ctrl+L -> Message::LoadConfig.
+        let effect = app.update(Message::LoadConfig);
+
+        // Expect: a ReadDir carrying a LoadConfig purpose for the current screen;
+        // nothing installed yet. The exact seed directory is the developer's
+        // contract (covered by their in-crate test); here we only pin the
+        // effect shape + purpose so this stays decoupled from that heuristic.
+        // (FINDING: the in-crate test expects the seed dir to be the output dir
+        //  `./out` itself, but `open_load_browser` reuses `initial_browse_dir`,
+        //  which strips it to its parent `.` — see the load test-plan.)
+        match effect {
+            Some(Effect::ReadDir { purpose, .. }) => {
+                assert_eq!(purpose, BrowsePurpose::LoadConfig(Screen::Csr));
+            }
+            other => panic!("expected a ReadDir with a LoadConfig purpose, got {other:?}"),
+        }
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn load_config_on_menu_is_noop() {
+        // Setup: still on the menu (no active config type).
+        let mut app = App::new("./out".to_string());
+
+        // Invoke & Expect: no effect, no browser.
+        let effect = app.update(Message::LoadConfig);
+        assert_eq!(effect, None);
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn enter_on_file_in_load_browser_yields_load_config_effect() {
+        // Setup: a LoadConfig-purpose browser open on the Cert screen.
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Cert;
+        app.focus = Focus::Form;
+        app.set_browser_entries(
+            PathBuf::from("/cfg"),
+            vec![dir(".."), file("certs.yaml")],
+            BrowsePurpose::LoadConfig(Screen::Cert),
+        );
+        app.update(Message::Down); // select the file
+
+        // Invoke: confirm the file selection.
+        let effect = app.update(Message::Confirm);
+
+        // Expect: an Effect::LoadConfig for the screen + full path; browser closed.
+        assert_eq!(
+            effect,
+            Some(Effect::LoadConfig {
+                screen: Screen::Cert,
+                path: "/cfg/certs.yaml".to_string(),
+            })
+        );
+        assert!(app.browser.is_none());
+    }
+
+    #[test]
+    fn enter_on_dir_in_load_browser_preserves_load_purpose() {
+        // Setup: descend a directory while in load mode.
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Crl;
+        app.focus = Focus::Form;
+        app.set_browser_entries(
+            PathBuf::from("/cfg"),
+            vec![dir("sub"), file("crl.yaml")],
+            BrowsePurpose::LoadConfig(Screen::Crl),
+        );
+
+        // Invoke: Enter on the directory entry (selected at index 0).
+        let effect = app.update(Message::Confirm);
+
+        // Expect: a re-list that preserves the LoadConfig purpose; browser stays open.
+        assert_eq!(
+            effect,
+            Some(Effect::ReadDir {
+                path: PathBuf::from("/cfg/sub"),
+                purpose: BrowsePurpose::LoadConfig(Screen::Crl),
+            })
+        );
+        assert!(app.browser.is_some());
+    }
+
+    #[test]
+    fn load_cert_list_replaces_list_and_resets_index() {
+        // Setup: a stale multi-entry list with a non-zero index.
+        let mut app = App::new("./out".to_string());
+        app.cert_list = vec![
+            CertForm::default(),
+            CertForm::default(),
+            CertForm::default(),
+        ];
+        app.cert_index = 2;
+
+        // Invoke: install two loaded entries.
+        let a = CertForm {
+            id: "ca".to_string(),
+            ..CertForm::default()
+        };
+        let b = CertForm {
+            id: "leaf".to_string(),
+            ..CertForm::default()
+        };
+        app.load_cert_list(vec![a, b]);
+
+        // Expect: the list is replaced wholesale, index reset, lands in the form.
+        assert_eq!(app.cert_list.len(), 2);
+        assert_eq!(app.cert_list[0].id, "ca");
+        assert_eq!(app.cert_list[1].id, "leaf");
+        assert_eq!(app.cert_index, 0);
+        assert_eq!(app.screen, Screen::Cert);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_csr_installs_form_and_focuses() {
+        let mut app = App::new("./out".to_string());
+        let form = CsrForm {
+            id: "req".to_string(),
+            ..CsrForm::default()
+        };
+        app.load_csr(form);
+        assert_eq!(app.csr.id, "req");
+        assert_eq!(app.screen, Screen::Csr);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_crl_installs_form_and_clamps_selected_row() {
+        let mut app = App::new("./out".to_string());
+        let form = CrlForm {
+            crl_file: "out.crl".to_string(),
+            revoked: vec![RevokedRow::default()],
+            selected_row: Some(9), // out of range
+            ..CrlForm::default()
+        };
+        app.load_crl(form);
+        assert_eq!(app.crl.crl_file, "out.crl");
+        assert_eq!(app.crl.selected_row, Some(0), "clamped into range");
+        assert_eq!(app.screen, Screen::Crl);
+        assert_eq!(app.focus, Focus::Form);
+    }
+
+    #[test]
+    fn load_cms_installs_form_and_focuses() {
+        let mut app = App::new("./out".to_string());
+        let form = cert_bar::tui::app::CmsForm {
+            id: "msg".to_string(),
+            ..Default::default()
+        };
+        app.load_cms(form);
+        assert_eq!(app.cms.id, "msg");
+        assert_eq!(app.screen, Screen::Cms);
+        assert_eq!(app.focus, Focus::Form);
     }
 }

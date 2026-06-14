@@ -235,9 +235,9 @@ fn render_title(frame: &mut ratatui::Frame, area: Rect, theme: &Theme) {
 }
 
 fn render_footer(frame: &mut ratatui::Frame, area: Rect, app: &App, theme: &Theme) {
-    let help = "Tab focus · ↑↓ field · ←→ option · Space toggle · Enter confirm · \
-                Del clear field · Ctrl+O browse · Ctrl+R clear · Ctrl+Shift+R clear all · \
-                g generate · s save · a/d row · Esc back · q quit";
+    let help = "Tab · ↑↓ field · ←→ option · Space toggle · Enter · \
+                Del clear field · Ctrl+O browse · Ctrl+L load · Ctrl+R clear · \
+                Ctrl+Shift+R clear all · g generate · s save · a/d row · Esc back · q quit";
 
     // First line: muted/dim help line.
     let help_line = Line::from(Span::styled(help, theme.muted()));
@@ -397,6 +397,10 @@ fn map_key(key: KeyEvent, app: &App) -> Option<Message> {
         match lower {
             'c' => return Some(Message::Quit),
             'o' => return Some(Message::OpenBrowser),
+            // Ctrl+L opens the file browser in "load a config" mode. Like the
+            // other Ctrl combos it fires regardless of text context; the
+            // reducer makes it a no-op on the menu (no active config type).
+            'l' => return Some(Message::LoadConfig),
             // Ctrl+Shift+R clears everything; plain Ctrl+R clears the current
             // form. The reducer treats `OpenBrowser`/`ClearForm`/`ClearAll` as
             // no-ops where they do not apply.
@@ -482,7 +486,8 @@ fn run_effect(app: &mut App, effect: Effect) {
             // Save failures also surface in the error popup (issue #2).
             Err(e) => app.set_error_popup(format!("Save failed: {e}")),
         },
-        Effect::ReadDir { path, target } => read_dir_into_browser(app, path, target),
+        Effect::ReadDir { path, purpose } => read_dir_into_browser(app, path, purpose),
+        Effect::LoadConfig { screen, path } => load_config_into_app(app, screen, &path),
     }
 }
 
@@ -508,7 +513,7 @@ fn generate_summary(app: &App, screen: Screen) -> String {
 /// synthesized `..` entry unless at a filesystem root. On any I/O error it fails
 /// closed: it records an error and closes the browser rather than panicking the
 /// terminal.
-fn read_dir_into_browser(app: &mut App, path: PathBuf, target: app::BrowseTarget) {
+fn read_dir_into_browser(app: &mut App, path: PathBuf, purpose: app::BrowsePurpose) {
     // The path may contain a literal `..` (e.g. `/a/b/..`); canonicalize to a
     // clean absolute directory. Fall back to the joined path if canonicalize
     // fails (e.g. a not-yet-existing component), so a real read error is still
@@ -549,7 +554,75 @@ fn read_dir_into_browser(app: &mut App, path: PathBuf, target: app::BrowseTarget
     entries.extend(dirs);
     entries.extend(files);
 
-    app.set_browser_entries(resolved, entries, target);
+    app.set_browser_entries(resolved, entries, purpose);
+}
+
+/// Executes an [`Effect::LoadConfig`]: the impure read that parses `path` as
+/// `screen`'s config type, reverse-maps it into form state and installs it on
+/// the model. Mirrors [`read_dir_into_browser`]'s fail-closed style, but load
+/// failures (read/parse errors, wrong-shape files, empty configs) route a clear
+/// message into the **error popup** rather than the transient footer, and never
+/// produce a false success. Never panics and never writes to stdout/stderr
+/// (which would corrupt the alternate screen).
+fn load_config_into_app(app: &mut App, screen: Screen, path: &str) {
+    match screen {
+        Screen::Cert => match crate::config::read_certificate_config(path) {
+            Ok(certs) => {
+                if certs.is_empty() {
+                    app.set_error_popup("Certificate config has no entries");
+                    return;
+                }
+                let n = certs.len();
+                let forms: Vec<app::CertForm> = certs.iter().map(convert::cert_to_form).collect();
+                app.load_cert_list(forms);
+                app.set_success(format!("Loaded {n} certificate(s) from {path}"));
+            }
+            Err(e) => app.set_error_popup(format!("Not a valid certificate config: {e}")),
+        },
+        Screen::Csr => match crate::config::read_csr_config(path) {
+            Ok(data) => {
+                let total = data.csrs.len() + data.to_sign.len();
+                if total == 0 {
+                    app.set_error_popup("CSR config has no entries");
+                    return;
+                }
+                let form = if let Some(csr) = data.csrs.first() {
+                    convert::csr_to_form(csr)
+                } else {
+                    // `total > 0` and `csrs` is empty, so `to_sign` is non-empty.
+                    convert::signing_request_to_form(&data.to_sign[0])
+                };
+                app.load_csr(form);
+                app.set_success(format!("Loaded 1 of {total} CSR entries from {path}"));
+            }
+            Err(e) => app.set_error_popup(format!("Not a valid CSR config: {e}")),
+        },
+        Screen::Crl => match crate::config::read_crl_config(path) {
+            Ok(crl) => {
+                let revoked = crl.revoked.len();
+                let form = convert::crl_to_form(&crl);
+                app.load_crl(form);
+                app.set_success(format!("Loaded CRL ({revoked} revoked) from {path}"));
+            }
+            Err(e) => app.set_error_popup(format!("Not a valid CRL config: {e}")),
+        },
+        Screen::Cms => match crate::config::read_cms_config(path) {
+            Ok(cmss) => {
+                if cmss.is_empty() {
+                    app.set_error_popup("CMS config has no entries");
+                    return;
+                }
+                let n = cmss.len();
+                let form = convert::cms_to_form(&cmss[0]);
+                app.load_cms(form);
+                app.set_success(format!("Loaded 1 of {n} CMS entries from {path}"));
+            }
+            Err(e) => app.set_error_popup(format!("Not a valid CMS config: {e}")),
+        },
+        // The browser is never opened in load mode on the menu, so this is
+        // unreachable in practice; treat as a no-op for totality.
+        Screen::Menu => {}
+    }
 }
 
 /// Converts every entry in `app.cert_list` into a [`crate::config::Certificate`],
@@ -630,7 +703,7 @@ fn save_yaml(app: &App, screen: Screen, path: &str) -> Result<(), Box<dyn std::e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app::{BrowseTarget, ConfirmAction, Dialog, Focus};
+    use app::{BrowsePurpose, BrowseTarget, ConfirmAction, Dialog, Focus};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
@@ -778,6 +851,7 @@ mod tests {
                 text.contains("Ctrl+O"),
                 "footer should list 'Ctrl+O browse'"
             );
+            assert!(text.contains("Ctrl+L"), "footer should list 'Ctrl+L load'");
             assert!(text.contains("Ctrl+R"), "footer should list 'Ctrl+R clear'");
             assert!(
                 text.contains("Ctrl+Shift+R"),
@@ -990,10 +1064,10 @@ mod tests {
                     },
                 ],
                 selected: 0,
-                target: BrowseTarget {
+                purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
-                },
+                }),
             });
             let theme = Theme::dark();
 
@@ -1028,10 +1102,10 @@ mod tests {
                     is_dir: false,
                 }],
                 selected: 0,
-                target: BrowseTarget {
+                purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
-                },
+                }),
             });
             let theme = Theme::dark();
 
@@ -1305,11 +1379,11 @@ mod tests {
     mod read_dir_effect {
         use super::*;
 
-        fn target() -> BrowseTarget {
-            BrowseTarget {
+        fn purpose() -> BrowsePurpose {
+            BrowsePurpose::FillField(BrowseTarget {
                 screen: Screen::Cert,
                 field: 12,
-            }
+            })
         }
 
         #[test]
@@ -1322,7 +1396,7 @@ mod tests {
             let mut app = App::new("./out".to_string());
 
             // Invoke the impure effect handler directly.
-            read_dir_into_browser(&mut app, tmp.path().to_path_buf(), target());
+            read_dir_into_browser(&mut app, tmp.path().to_path_buf(), purpose());
 
             // Find: the installed browser listing.
             let browser = app.browser.expect("browser installed on success");
@@ -1351,7 +1425,7 @@ mod tests {
             let with_dotdot = tmp.path().join("sub").join("..");
 
             let mut app = App::new("./out".to_string());
-            read_dir_into_browser(&mut app, with_dotdot, target());
+            read_dir_into_browser(&mut app, with_dotdot, purpose());
 
             let browser = app.browser.expect("browser installed");
             // canonicalize collapses the `..`, so the listing is the temp dir's.
@@ -1369,7 +1443,7 @@ mod tests {
             read_dir_into_browser(
                 &mut app,
                 PathBuf::from("/this/path/does/not/exist/at/all"),
-                target(),
+                purpose(),
             );
             assert!(app.browser.is_none(), "browser stays closed on I/O error");
             assert!(app.error.is_some(), "an error message is recorded");
@@ -1383,7 +1457,7 @@ mod tests {
             read_dir_into_browser(
                 &mut app,
                 PathBuf::from("/this/path/does/not/exist/either"),
-                target(),
+                purpose(),
             );
             assert!(app.error.is_some(), "directory-read errors use the footer");
             assert!(
@@ -1448,10 +1522,10 @@ mod tests {
                 current_dir: std::path::PathBuf::from("/tmp"),
                 entries: Vec::new(),
                 selected: 0,
-                target: BrowseTarget {
+                purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
-                },
+                }),
             });
             assert_eq!(
                 map_key(key(KeyCode::Char('c')), &app),
@@ -1597,10 +1671,10 @@ mod tests {
                     is_dir: false,
                 }],
                 selected: 0,
-                target: BrowseTarget {
+                purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
-                },
+                }),
             });
             app.set_error_popup("Generate failed: boom");
             let theme = Theme::dark();
@@ -1621,6 +1695,289 @@ mod tests {
                 !text.contains("Output directory:"),
                 "the confirm dialog must not draw underneath the error popup"
             );
+        }
+    }
+
+    mod load_config_mapping {
+        use super::*;
+
+        fn cert_form_app() -> App {
+            let mut app = App::new("./out".to_string());
+            app.screen = Screen::Cert;
+            app.focus = Focus::Form;
+            app
+        }
+
+        #[test]
+        fn ctrl_l_maps_to_load_config() {
+            let app = cert_form_app();
+            assert_eq!(
+                map_key(ctrl_key('l', false), &app),
+                Some(Message::LoadConfig)
+            );
+        }
+
+        #[test]
+        fn ctrl_l_maps_to_load_config_uppercase() {
+            // Case-insensitive, like the other Ctrl combos.
+            let app = cert_form_app();
+            assert_eq!(
+                map_key(ctrl_key('L', false), &app),
+                Some(Message::LoadConfig)
+            );
+        }
+
+        #[test]
+        fn ctrl_l_fires_while_typing_a_text_field() {
+            // A free-text field is focused (text context); Ctrl+L is still not
+            // consumed as a typed character.
+            let mut app = cert_form_app();
+            app.cert_mut().field = 0; // `id` text field
+            assert!(is_text_context(&app));
+            assert_eq!(
+                map_key(ctrl_key('l', false), &app),
+                Some(Message::LoadConfig)
+            );
+        }
+    }
+
+    // Test fixtures build form structs field-by-field for readability; the
+    // struct-update alternative is noisier here.
+    #[allow(clippy::field_reassign_with_default)]
+    mod load_config_effect {
+        use super::*;
+        use crate::config;
+
+        /// Builds a one-line certificate config (a CA root) via the forward
+        /// mapper and writes it to `path` so the load path reads a real file.
+        fn write_one_cert(path: &std::path::Path, id: &str) {
+            let mut form = app::CertForm::default();
+            form.id = id.to_string();
+            form.common_name = id.to_string();
+            form.ca = true;
+            let cert = convert::cert_from_form(&form).expect("forward map");
+            config::write_certificate_config(vec![cert], path).expect("write cert config");
+        }
+
+        #[test]
+        fn cert_loads_all_entries_and_sets_success() {
+            // Setup: a two-entry certificate config written to a temp file.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("certs.yaml");
+            let mut root = app::CertForm::default();
+            root.id = "root".to_string();
+            root.common_name = "Root".to_string();
+            root.ca = true;
+            let mut leaf = app::CertForm::default();
+            leaf.id = "leaf".to_string();
+            leaf.common_name = "Leaf".to_string();
+            leaf.parent = "root".to_string();
+            let certs = vec![
+                convert::cert_from_form(&root).expect("root maps"),
+                convert::cert_from_form(&leaf).expect("leaf maps"),
+            ];
+            config::write_certificate_config(certs, &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Cert, &path);
+
+            // Expect: both entries loaded, focused, success status with count.
+            assert_eq!(app.cert_list.len(), 2, "every entry is loaded");
+            assert_eq!(app.cert_list[0].id, "root");
+            assert_eq!(app.cert_list[1].id, "leaf");
+            assert_eq!(app.cert_index, 0);
+            assert_eq!(app.screen, Screen::Cert);
+            assert_eq!(app.focus, Focus::Form);
+            assert!(app.error_popup.is_none(), "no error on a valid config");
+            let status = app.status.as_deref().expect("success status set");
+            assert_eq!(status, &format!("Loaded 2 certificate(s) from {path}"));
+            assert_eq!(app.status_kind(), StatusKind::Success);
+        }
+
+        #[test]
+        fn csr_with_csr_and_signing_request_loads_first_csr_in_generate_mode() {
+            // Setup: a CSR config holding one generate csr AND one signing request.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("csr.yaml");
+
+            let mut gen_form = app::CsrForm::default();
+            gen_form.id = "web".to_string();
+            gen_form.common_name = "web.example".to_string();
+            let csr = convert::csr_from_form(&gen_form)
+                .expect("gen csr maps")
+                .csrs;
+
+            let mut sign = app::CsrForm::default();
+            sign.sign_mode = true;
+            sign.csr_pem_file = "req.pem".to_string();
+            sign.signer.cert_pem_file = "ca.pem".to_string();
+            sign.signer.private_key_pem_file = "ca.key".to_string();
+            let to_sign = convert::csr_from_form(&sign).expect("sign maps").to_sign;
+
+            config::write_csr_config(config::CsrData { csrs: csr, to_sign }, &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Csr, &path);
+
+            // Expect: the first csr loaded in generate mode; status reports 1 of 2.
+            assert!(app.error_popup.is_none());
+            assert!(!app.csr.sign_mode, "the generate csr is preferred");
+            assert_eq!(app.csr.id, "web");
+            assert_eq!(app.screen, Screen::Csr);
+            let status = app.status.as_deref().expect("success status");
+            assert_eq!(status, &format!("Loaded 1 of 2 CSR entries from {path}"));
+        }
+
+        #[test]
+        fn csr_with_only_signing_requests_loads_sign_mode() {
+            // Setup: a CSR config holding only a signing request.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("sign.yaml");
+
+            let mut sign = app::CsrForm::default();
+            sign.sign_mode = true;
+            sign.csr_pem_file = "req.pem".to_string();
+            sign.signer.cert_pem_file = "ca.pem".to_string();
+            sign.signer.private_key_pem_file = "ca.key".to_string();
+            let to_sign = convert::csr_from_form(&sign).expect("sign maps").to_sign;
+
+            config::write_csr_config(
+                config::CsrData {
+                    csrs: Vec::new(),
+                    to_sign,
+                },
+                &yaml,
+            )
+            .expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Csr, &path);
+
+            // Expect: the form is in sign mode.
+            assert!(app.error_popup.is_none());
+            assert!(app.csr.sign_mode, "only signing requests -> sign mode");
+            assert_eq!(app.csr.csr_pem_file, "req.pem");
+            let status = app.status.as_deref().expect("success status");
+            assert_eq!(status, &format!("Loaded 1 of 1 CSR entries from {path}"));
+        }
+
+        #[test]
+        fn crl_loads_with_revoked_count() {
+            // Setup: a CRL config with one revoked row.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("crl.yaml");
+
+            let mut form = app::CrlForm::default();
+            form.crl_file = "out.crl".to_string();
+            form.signer.cert_pem_file = "ca.pem".to_string();
+            form.signer.private_key_pem_file = "ca.key".to_string();
+            form.revoked.push(app::RevokedRow {
+                serial: "abcd".to_string(),
+                reason: 0,
+            });
+            let crl = convert::crl_from_form(&form).expect("crl maps");
+            config::write_crl_config(crl, &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Crl, &path);
+
+            // Expect: the CRL loaded, status reports the revoked count.
+            assert!(app.error_popup.is_none());
+            assert_eq!(app.screen, Screen::Crl);
+            assert_eq!(app.crl.revoked.len(), 1);
+            let status = app.status.as_deref().expect("success status");
+            assert_eq!(status, &format!("Loaded CRL (1 revoked) from {path}"));
+        }
+
+        #[test]
+        fn cms_loads_first_entry_with_count() {
+            // Setup: a CMS config with one entry.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("cms.yaml");
+
+            let mut form = app::CmsForm::default();
+            form.id = "msg".to_string();
+            form.data_file = "data.bin".to_string();
+            let cms = convert::cms_from_form(&form).expect("cms maps");
+            config::write_cms_config(vec![cms], &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Cms, &path);
+
+            // Expect
+            assert!(app.error_popup.is_none());
+            assert_eq!(app.screen, Screen::Cms);
+            assert_eq!(app.cms.id, "msg");
+            let status = app.status.as_deref().expect("success status");
+            assert_eq!(status, &format!("Loaded 1 of 1 CMS entries from {path}"));
+        }
+
+        #[test]
+        fn wrong_shape_file_routes_to_error_popup_without_false_success() {
+            // Setup: a valid CMS config loaded on the Cert screen — a mismatched
+            // shape. The cert reader must fail, routing to the popup, never a
+            // false success, and leaving the form unchanged.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("cms.yaml");
+            let mut form = app::CmsForm::default();
+            form.id = "msg".to_string();
+            form.data_file = "data.bin".to_string();
+            let cms = convert::cms_from_form(&form).expect("cms maps");
+            config::write_cms_config(vec![cms], &yaml).expect("write");
+
+            let mut app = App::new("./out".to_string());
+            let before = app.cert_list.clone();
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke: load the CMS file as a certificate config.
+            load_config_into_app(&mut app, Screen::Cert, &path);
+
+            // Expect: error popup, no success, form unchanged.
+            let popup = app.error_popup.as_deref().expect("popup set on mismatch");
+            assert!(
+                popup.starts_with("Not a valid certificate config:"),
+                "mismatched file should report a clear parse error, got: {popup}"
+            );
+            assert!(app.status.is_none(), "no false success on a parse error");
+            assert_eq!(
+                app.cert_list.len(),
+                before.len(),
+                "the form is left unchanged on failure"
+            );
+        }
+
+        #[test]
+        fn empty_certificate_config_routes_to_error_popup() {
+            // Setup: a valid YAML certificate config with zero entries.
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let yaml = tmp.path().join("empty.yaml");
+            config::write_certificate_config(Vec::new(), &yaml).expect("write empty");
+
+            let mut app = App::new("./out".to_string());
+            let path = yaml.to_string_lossy().into_owned();
+
+            // Invoke
+            load_config_into_app(&mut app, Screen::Cert, &path);
+
+            // Expect: the empty config is an error, not a silent success.
+            let popup = app.error_popup.as_deref().expect("popup on empty config");
+            assert_eq!(popup, "Certificate config has no entries");
+            assert!(app.status.is_none(), "no success for an empty config");
         }
     }
 

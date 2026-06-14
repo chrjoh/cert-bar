@@ -63,10 +63,38 @@ cargo run -- cms --config-file ./examples/cms_config.yaml --output-dir ./cms_dat
 ### Interactive TUI
 
 Besides the CLI, cert-bar ships an interactive terminal UI for building certificates, CSRs, CRLs, and CMS messages with forms (a built-in file browser for selecting key/cert paths) instead of hand-writing YAML — it can generate the output directly or save a replayable YAML config. It is gated behind the `tui` feature:
+(My test to build something with LLM)
 
 ```bash
 cargo run --features tui -- tui
 ```
+
+#### Keyboard shortcuts
+
+The bottom help line always shows the current bindings. Where a shortcut applies:
+
+| Key | Action | Where it works |
+| --- | --- | --- |
+| `Tab` / `Shift+Tab` | Move focus between panes (Menu ↔ Entries ↔ Form) | a form screen |
+| `↑` / `↓` | Move within the focused pane (menu items, form fields, list rows) | anywhere |
+| `←` / `→` | Cycle the selected option, or move the usage highlight | on a form field |
+| `Space` | Toggle the focused checkbox / usage flag | non-text field |
+| `Enter` | Confirm: from the menu open the selected form; in a form open the generate dialog; in a dialog/browser accept the selection | context-dependent |
+| `Esc` | Back: close a dialog/browser, return a form to the menu, or quit from the menu | anywhere |
+| *(typing)* | Edit the focused text field | text field |
+| `Backspace` | Delete the character before the cursor | text field |
+| `Del` | Clear the focused field (in the file browser: clear the target and close) | anywhere |
+| `Ctrl+O` | Open the file browser to pick a path for the focused field | on a path field |
+| `Ctrl+L` | Load an existing YAML config into the current form | a form screen |
+| `Ctrl+R` | Clear the current form | a form screen |
+| `Ctrl+Shift+R` | Clear everything (e.g. all certificate entries) | a form screen |
+| `g` | Generate output now (opens a confirm dialog) | a form screen, non-text field |
+| `s` | Save the form as a replayable YAML config | a form screen, non-text field |
+| `a` / `d` | Add / delete a row (certificate entry, or CRL revoked row) | Entries pane / CRL screen |
+| `q` | Quit | non-text field |
+| `Ctrl+C` | Quit | anywhere |
+
+> **Note on the letter shortcuts** (`g`, `s`, `q`, `a`, `d`, `Space`): while a text field is focused they are typed into the field. To use them, move focus off the text field first — `Tab` to the **Menu**/**Entries** pane or `↑`/`↓` to a non-text field (a cycler, toggle, or the usage list). The `Ctrl+…` shortcuts work even while typing. `g`, `s`, and `Ctrl+L` also require a type to be selected (a form screen), so they do nothing on the top-level menu.
 
 ### Post-Quantum Cryptography (PQC)
 

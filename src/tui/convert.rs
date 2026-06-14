@@ -17,12 +17,12 @@ use num_bigint::BigUint;
 use num_traits::Num;
 
 use crate::config::{
-    CertInfo, Certificate, Cms, Crl, Csr, CsrData, Pkix, Reason, RevokedCert, Signer,
-    SigningRequest, Usage,
+    CertInfo, Certificate, Cms, Crl, Csr, CsrData, HashAlg, KeyType, Pkix, Reason, RevokedCert,
+    Signer, SigningRequest, Usage,
 };
 use crate::tui::app::{
     CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, REASON_OPTIONS,
-    SignerState, USAGE_OPTIONS,
+    RevokedRow, SignerState, USAGE_OPTIONS,
 };
 
 /// Accepted RSA key lengths. Mirrors the lengths the generation backend maps
@@ -251,6 +251,211 @@ fn cms_from_form_inner(form: &CmsForm) -> Result<Cms, ConvertError> {
     })
 }
 
+// --- reverse mappers (config -> form) --------------------------------------
+
+/// Builds a [`CertForm`] from a parsed [`Certificate`].
+///
+/// This is the inverse of [`cert_from_form`]: enum values become `*_OPTIONS`
+/// indices, `Option<Vec<String>>` altnames become a comma-joined buffer,
+/// `Option<Vec<Usage>>` becomes the parallel `Vec<bool>`, and `Option`/`None`
+/// fields become empty buffers. The conversion is lossless for any config the
+/// TUI itself produced (modulo the documented index-0 fallbacks).
+///
+/// UI cursor state (`field`, `usage_cursor`) is reset to its default `0`; it is
+/// not part of the config and is therefore not preserved.
+#[must_use]
+pub fn cert_to_form(cert: &Certificate) -> CertForm {
+    CertForm {
+        id: cert.id.clone(),
+        common_name: cert.pkix.commonname.clone(),
+        country: cert.pkix.country.clone(),
+        organization: cert.pkix.organization.clone(),
+        key_type: key_type_index(&cert.keytype),
+        key_length: key_length_buffer(cert.keylength),
+        // For key types with no `hashalg` (Ed25519/PQC) the config value is
+        // `None`; we fall back to index 0. That index is ignored on
+        // regeneration for those key types, so this is harmless.
+        hash_alg: cert.hashalg.as_ref().map(hash_alg_index).unwrap_or(0),
+        usage: usage_flags(&cert.usage),
+        usage_cursor: 0,
+        altnames: altnames_buffer(&cert.altnames),
+        ca: cert.ca.unwrap_or(false),
+        valid_to: opt_buffer(&cert.validto),
+        parent: opt_buffer(&cert.parent),
+        signer: signer_state(&cert.signer),
+        field: 0,
+    }
+}
+
+/// Builds a generate-mode [`CsrForm`] from a parsed [`Csr`].
+///
+/// The inverse of the generate branch of [`csr_from_form`]: `sign_mode` is
+/// `false` and the sign-mode-only fields (`csr_pem_file`, `signer`, `valid_to`,
+/// `ca`) stay at their defaults.
+#[must_use]
+pub fn csr_to_form(csr: &Csr) -> CsrForm {
+    CsrForm {
+        id: csr.id.clone(),
+        common_name: csr.pkix.commonname.clone(),
+        country: csr.pkix.country.clone(),
+        organization: csr.pkix.organization.clone(),
+        key_type: key_type_index(&csr.keytype),
+        key_length: key_length_buffer(csr.keylength),
+        hash_alg: csr.hashalg.as_ref().map(hash_alg_index).unwrap_or(0),
+        usage: usage_flags(&csr.usage),
+        usage_cursor: 0,
+        altnames: altnames_buffer(&csr.altnames),
+        sign_mode: false,
+        ..CsrForm::default()
+    }
+}
+
+/// Builds a sign-mode [`CsrForm`] from a parsed [`SigningRequest`].
+///
+/// The inverse of the sign branch of [`csr_from_form`]: `sign_mode` is `true`
+/// and the new-CSR-only fields (`id`, `pkix`, key type, usage, altnames) stay at
+/// their defaults.
+#[must_use]
+pub fn signing_request_to_form(req: &SigningRequest) -> CsrForm {
+    CsrForm {
+        sign_mode: true,
+        csr_pem_file: req.csr_pem_file.clone(),
+        signer: signer_state_req(&req.signer),
+        valid_to: opt_buffer(&req.validto),
+        ca: req.ca.unwrap_or(false),
+        ..CsrForm::default()
+    }
+}
+
+/// Builds a [`CrlForm`] from a parsed [`Crl`].
+///
+/// The inverse of [`crl_from_form`]: each revoked-cert serial (`BigUint`) is
+/// rendered back to lowercase hex via [`serial_hex`], and each reason becomes a
+/// [`REASON_OPTIONS`] index. `selected_row` is `Some(0)` when there is at least
+/// one revoked row, else `None`; `field` resets to `0`.
+#[must_use]
+pub fn crl_to_form(crl: &Crl) -> CrlForm {
+    let revoked: Vec<RevokedRow> = crl
+        .revoked
+        .iter()
+        .map(|entry| RevokedRow {
+            serial: serial_hex(&entry.cert_info.serial),
+            reason: reason_index(&entry.cert_info.reason),
+        })
+        .collect();
+    let selected_row = if revoked.is_empty() { None } else { Some(0) };
+
+    CrlForm {
+        crl_file: crl.crl_file.clone(),
+        signer: signer_state_req(&crl.signer),
+        revoked,
+        field: 0,
+        selected_row,
+    }
+}
+
+/// Builds a [`CmsForm`] from a parsed [`Cms`].
+///
+/// The inverse of [`cms_from_form`]: optional signer/recipient collapse to empty
+/// buffers when unset and `detached` defaults to `false` when absent.
+#[must_use]
+pub fn cms_to_form(cms: &Cms) -> CmsForm {
+    CmsForm {
+        id: cms.id.clone(),
+        data_file: cms.data_file.clone(),
+        signer: signer_state(&cms.signer),
+        recipient: opt_buffer(&cms.recipient),
+        detached: cms.detached.unwrap_or(false),
+        field: 0,
+    }
+}
+
+// --- reverse helpers (config value -> form representation) ------------------
+
+/// Resolves a [`KeyType`] back to its [`KEY_TYPE_OPTIONS`] index.
+///
+/// Falls back to index `0` for a value absent from the options slice (e.g. a PQC
+/// key type when the `pqc` feature is off). This is a documented lossy fallback;
+/// in practice the reader would reject an unknown variant before this point, so
+/// it only triggers for a valid variant missing from the slice.
+fn key_type_index(kt: &KeyType) -> usize {
+    KEY_TYPE_OPTIONS.iter().position(|k| *k == *kt).unwrap_or(0) // documented lossy fallback
+}
+
+/// Resolves a [`HashAlg`] back to its [`HASH_ALG_OPTIONS`] index, falling back to
+/// index `0` for an absent value (documented lossy fallback).
+fn hash_alg_index(alg: &HashAlg) -> usize {
+    HASH_ALG_OPTIONS
+        .iter()
+        .position(|a| *a == *alg)
+        .unwrap_or(0) // documented lossy fallback
+}
+
+/// Resolves a [`Reason`] back to its [`REASON_OPTIONS`] index, falling back to
+/// index `0` for an absent value (documented lossy fallback).
+fn reason_index(reason: &Reason) -> usize {
+    REASON_OPTIONS
+        .iter()
+        .position(|r| *r == *reason)
+        .unwrap_or(0) // documented lossy fallback
+}
+
+/// Maps an optional config usage list back to the parallel `Vec<bool>` toggle
+/// vector (one `bool` per [`USAGE_OPTIONS`] entry). `None` -> all `false`.
+fn usage_flags(usage: &Option<Vec<Usage>>) -> Vec<bool> {
+    let mut flags = vec![false; USAGE_OPTIONS.len()];
+    if let Some(selected) = usage {
+        for value in selected {
+            if let Some(idx) = USAGE_OPTIONS.iter().position(|u| *u == *value) {
+                flags[idx] = true;
+            }
+        }
+    }
+    flags
+}
+
+/// Joins an optional alt-names list into the comma-separated buffer the forward
+/// [`altnames`] helper splits on. `None` -> empty string.
+fn altnames_buffer(names: &Option<Vec<String>>) -> String {
+    match names {
+        Some(list) => list.join(", "),
+        None => String::new(),
+    }
+}
+
+/// Renders a serial back to lowercase hex, matching `serialize_serial` (so the
+/// forward `parse_serial` round-trips it).
+fn serial_hex(serial: &BigUint) -> String {
+    serial.to_str_radix(16)
+}
+
+/// Renders an optional RSA key length back to a buffer; `None` -> empty string.
+fn key_length_buffer(length: Option<u32>) -> String {
+    length.map(|n| n.to_string()).unwrap_or_default()
+}
+
+/// Clones an optional string into a buffer; `None` -> empty string.
+fn opt_buffer(value: &Option<String>) -> String {
+    value.clone().unwrap_or_default()
+}
+
+/// Builds a [`SignerState`] from an optional [`Signer`]; `None` -> empty buffers
+/// (the forward `signer_opt` maps empty/empty -> `None`, so this round-trips).
+fn signer_state(signer: &Option<Signer>) -> SignerState {
+    match signer {
+        Some(s) => signer_state_req(s),
+        None => SignerState::default(),
+    }
+}
+
+/// Builds a [`SignerState`] from a required [`Signer`].
+fn signer_state_req(signer: &Signer) -> SignerState {
+    SignerState {
+        cert_pem_file: signer.cert_pem_file.clone(),
+        private_key_pem_file: signer.private_key_pem_file.clone(),
+    }
+}
+
 // --- shared helpers --------------------------------------------------------
 
 /// Trims `value` and requires it to be non-empty, returning the owned string.
@@ -395,7 +600,6 @@ fn signer_required(state: &SignerState) -> Result<Signer, ConvertError> {
 mod tests {
     use super::*;
     use crate::config::KeyType;
-    use crate::tui::app::RevokedRow;
 
     fn filled_cert() -> CertForm {
         CertForm {
@@ -789,6 +993,323 @@ mod tests {
             // cert left blank
             let err = cms_from_form(&form).unwrap_err();
             assert!(err.contains("signer requires both"), "{err}");
+        }
+    }
+
+    // --- reverse mappers (config -> form) ----------------------------------
+
+    mod reverse_helpers {
+        use super::*;
+        use crate::config::Reason;
+
+        #[test]
+        fn usage_flags_sets_exactly_present_indices() {
+            // Setup: select serverauth (idx 0) and certsign (idx 2).
+            let usage = Some(vec![Usage::serverauth, Usage::certsign]);
+
+            // Invoke
+            let flags = usage_flags(&usage);
+
+            // Expect: exactly those indices true.
+            let mut expected = vec![false; USAGE_OPTIONS.len()];
+            expected[0] = true;
+            expected[2] = true;
+            assert_eq!(flags, expected);
+        }
+
+        #[test]
+        fn usage_flags_none_maps_to_all_false() {
+            let flags = usage_flags(&None);
+            assert_eq!(flags, vec![false; USAGE_OPTIONS.len()]);
+        }
+
+        #[test]
+        fn altnames_buffer_joins_and_resplits_losslessly() {
+            // Setup
+            let names = Some(vec!["a.com".to_string(), "b.com".to_string()]);
+
+            // Invoke
+            let buffer = altnames_buffer(&names);
+
+            // Expect: comma-space joined, and the forward helper re-splits it.
+            assert_eq!(buffer, "a.com, b.com");
+            assert_eq!(altnames(&buffer), names);
+        }
+
+        #[test]
+        fn altnames_buffer_none_is_empty() {
+            assert_eq!(altnames_buffer(&None), "");
+        }
+
+        #[test]
+        fn serial_hex_is_lowercase_and_reparses() {
+            // Setup
+            let serial = BigUint::from_str_radix("204a77d3", 16).unwrap();
+
+            // Invoke
+            let hex = serial_hex(&serial);
+
+            // Expect: lowercase hex that re-parses to the same value.
+            assert_eq!(hex, "204a77d3");
+            assert_eq!(parse_serial(&hex).unwrap(), serial);
+        }
+
+        #[test]
+        fn reason_index_resolves_each_option() {
+            assert_eq!(reason_index(&Reason::Unspecified), 0);
+            assert_eq!(reason_index(&Reason::KeyCompromise), 1);
+            assert_eq!(reason_index(&Reason::CaCompromise), 2);
+        }
+    }
+
+    mod cert_round_trip {
+        use super::*;
+
+        /// A fully-populated RSA cert form to prove a lossless forward->reverse
+        /// round-trip of every observable config-backed field.
+        fn rich_cert() -> CertForm {
+            let mut form = CertForm {
+                id: "cert1".to_string(),
+                common_name: "Example CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Example Org".to_string(),
+                key_length: "4096".to_string(),
+                altnames: "a.com, b.com".to_string(),
+                ca: true,
+                valid_to: "2030-01-01".to_string(),
+                ..CertForm::default()
+            };
+            form.key_type = KEY_TYPE_OPTIONS
+                .iter()
+                .position(|k| *k == KeyType::RSA)
+                .unwrap();
+            form.hash_alg = HASH_ALG_OPTIONS
+                .iter()
+                .position(|a| matches!(a, crate::config::HashAlg::SHA384))
+                .unwrap();
+            form.usage[0] = true;
+            form.usage[2] = true;
+            form.signer.cert_pem_file = "c.pem".to_string();
+            form.signer.private_key_pem_file = "k.pem".to_string();
+            form
+        }
+
+        #[test]
+        fn rsa_cert_round_trips_observable_fields() {
+            // Setup -> Invoke forward then reverse.
+            let original = rich_cert();
+            let cert = cert_from_form(&original).unwrap();
+            let restored = cert_to_form(&cert);
+
+            // Expect: every config-backed field survives.
+            assert_eq!(restored.id, original.id);
+            assert_eq!(restored.common_name, original.common_name);
+            assert_eq!(restored.country, original.country);
+            assert_eq!(restored.organization, original.organization);
+            assert_eq!(restored.key_type, original.key_type);
+            assert_eq!(restored.key_length, original.key_length);
+            assert_eq!(restored.hash_alg, original.hash_alg);
+            assert_eq!(restored.usage, original.usage);
+            assert_eq!(restored.altnames, original.altnames);
+            assert_eq!(restored.ca, original.ca);
+            assert_eq!(restored.valid_to, original.valid_to);
+            assert_eq!(restored.signer.cert_pem_file, original.signer.cert_pem_file);
+            assert_eq!(
+                restored.signer.private_key_pem_file,
+                original.signer.private_key_pem_file
+            );
+        }
+
+        #[test]
+        fn ed25519_cert_has_no_hashalg_and_falls_back_to_index_zero() {
+            // Setup: Ed25519 has its hashing built in -> config hashalg is None.
+            let mut form = rich_cert();
+            form.key_type = KEY_TYPE_OPTIONS
+                .iter()
+                .position(|k| *k == KeyType::Ed25519)
+                .unwrap();
+
+            // Invoke (no panic) forward then reverse.
+            let cert = cert_from_form(&form).unwrap();
+            assert_eq!(cert.hashalg, None);
+            let restored = cert_to_form(&cert);
+
+            // Expect: hashalg index defaults to 0 for the None case.
+            assert_eq!(restored.hash_alg, 0);
+            assert_eq!(restored.key_type, form.key_type);
+        }
+
+        #[test]
+        fn empty_optionals_round_trip_to_empty_buffers() {
+            let form = filled_cert();
+            let cert = cert_from_form(&form).unwrap();
+            let restored = cert_to_form(&cert);
+            assert_eq!(restored.parent, "");
+            assert_eq!(restored.valid_to, "");
+            assert_eq!(restored.altnames, "");
+            assert_eq!(restored.signer.cert_pem_file, "");
+            assert_eq!(restored.signer.private_key_pem_file, "");
+            assert_eq!(restored.usage, vec![false; USAGE_OPTIONS.len()]);
+        }
+    }
+
+    mod csr_round_trip {
+        use super::*;
+
+        #[test]
+        fn generate_mode_round_trips() {
+            // Setup
+            let mut original = CsrForm {
+                id: "csr1".to_string(),
+                common_name: "Example CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Example Org".to_string(),
+                altnames: "a.com, b.com".to_string(),
+                sign_mode: false,
+                ..CsrForm::default()
+            };
+            original.usage[1] = true;
+
+            // Invoke: forward (one csr) then reverse.
+            let data = csr_from_form(&original).unwrap();
+            let restored = csr_to_form(&data.csrs[0]);
+
+            // Expect
+            assert!(!restored.sign_mode);
+            assert_eq!(restored.id, original.id);
+            assert_eq!(restored.common_name, original.common_name);
+            assert_eq!(restored.key_type, original.key_type);
+            assert_eq!(restored.usage, original.usage);
+            assert_eq!(restored.altnames, original.altnames);
+        }
+
+        #[test]
+        fn sign_mode_round_trips() {
+            // Setup
+            let original = CsrForm {
+                sign_mode: true,
+                csr_pem_file: "req.pem".to_string(),
+                valid_to: "2030-01-01".to_string(),
+                ca: true,
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                ..CsrForm::default()
+            };
+
+            // Invoke: forward (one signing request) then reverse.
+            let data = csr_from_form(&original).unwrap();
+            let restored = signing_request_to_form(&data.to_sign[0]);
+
+            // Expect
+            assert!(restored.sign_mode);
+            assert_eq!(restored.csr_pem_file, "req.pem");
+            assert_eq!(restored.valid_to, "2030-01-01");
+            assert!(restored.ca);
+            assert_eq!(restored.signer.cert_pem_file, "c.pem");
+            assert_eq!(restored.signer.private_key_pem_file, "k.pem");
+        }
+    }
+
+    mod crl_round_trip {
+        use super::*;
+
+        #[test]
+        fn round_trips_revoked_row_serial_and_reason() {
+            // Setup: a CRL form with a colon-formatted serial.
+            let original = CrlForm {
+                crl_file: "crl.pem".to_string(),
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                revoked: vec![RevokedRow {
+                    serial: "20:4a:77:d3".to_string(),
+                    reason: 1,
+                }],
+                field: 0,
+                selected_row: None,
+            };
+
+            // Invoke: forward then reverse.
+            let crl = crl_from_form(&original).unwrap();
+            let restored = crl_to_form(&crl);
+
+            // Expect: serial normalizes to lowercase hex that re-parses to the
+            // same BigUint, reason index survives, selected_row becomes Some(0).
+            assert_eq!(restored.crl_file, "crl.pem");
+            assert_eq!(restored.signer.cert_pem_file, "c.pem");
+            assert_eq!(restored.revoked.len(), 1);
+            assert_eq!(restored.revoked[0].serial, "204a77d3");
+            assert_eq!(restored.revoked[0].reason, 1);
+            assert_eq!(restored.selected_row, Some(0));
+            let expected = BigUint::from_str_radix("204a77d3", 16).unwrap();
+            assert_eq!(parse_serial(&restored.revoked[0].serial).unwrap(), expected);
+        }
+
+        #[test]
+        fn empty_revoked_list_has_no_selection() {
+            let original = CrlForm {
+                crl_file: "crl.pem".to_string(),
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                revoked: Vec::new(),
+                field: 0,
+                selected_row: None,
+            };
+            let crl = crl_from_form(&original).unwrap();
+            let restored = crl_to_form(&crl);
+            assert!(restored.revoked.is_empty());
+            assert_eq!(restored.selected_row, None);
+        }
+    }
+
+    mod cms_round_trip {
+        use super::*;
+
+        #[test]
+        fn round_trips_observable_fields() {
+            // Setup
+            let original = CmsForm {
+                id: "cms1".to_string(),
+                data_file: "msg.txt".to_string(),
+                recipient: "rcpt.pem".to_string(),
+                detached: true,
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                field: 0,
+            };
+
+            // Invoke
+            let cms = cms_from_form(&original).unwrap();
+            let restored = cms_to_form(&cms);
+
+            // Expect
+            assert_eq!(restored.id, "cms1");
+            assert_eq!(restored.data_file, "msg.txt");
+            assert_eq!(restored.recipient, "rcpt.pem");
+            assert!(restored.detached);
+            assert_eq!(restored.signer.cert_pem_file, "c.pem");
+            assert_eq!(restored.signer.private_key_pem_file, "k.pem");
+        }
+
+        #[test]
+        fn empty_optionals_round_trip_to_empty_buffers() {
+            let original = CmsForm {
+                id: "cms1".to_string(),
+                data_file: "msg.txt".to_string(),
+                ..CmsForm::default()
+            };
+            let cms = cms_from_form(&original).unwrap();
+            let restored = cms_to_form(&cms);
+            assert_eq!(restored.recipient, "");
+            assert_eq!(restored.signer.cert_pem_file, "");
+            assert!(!restored.detached);
         }
     }
 }
