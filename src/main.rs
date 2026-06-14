@@ -1,12 +1,8 @@
-#![allow(dead_code, unused_variables)]
-use crate::config::{read_certificate_config, read_cms_config, read_crl_config, read_csr_config};
+use cert_bar::config::{
+    read_certificate_config, read_cms_config, read_crl_config, read_csr_config,
+};
+use cert_bar::{certificate, cms, crl, csr};
 use clap::{Parser, Subcommand};
-
-mod certificate;
-mod cms;
-mod config;
-mod crl;
-mod csr;
 
 #[derive(Parser, Debug)]
 #[command(name = "program", version, about = "Certificate tool", long_about = None)]
@@ -45,6 +41,13 @@ enum Commands {
         #[arg(short, long, default_value = "./examples/test_cms.yaml")]
         config_file: String,
         #[arg(short, long, default_value = "./cms_data")]
+        output_dir: String,
+    },
+    /// Launch the interactive terminal UI
+    #[cfg(feature = "tui")]
+    Tui {
+        /// Default output directory pre-filled in the generate / save prompts
+        #[arg(short, long, default_value = "./certs")]
         output_dir: String,
     },
 }
@@ -98,6 +101,13 @@ fn main() {
                 Err(e) => println!("Failed to handle CMD with error {}", e),
             },
             Err(e) => println!("Failed to read Cms config file with error: {}", e),
+        },
+        #[cfg(feature = "tui")]
+        Commands::Tui { output_dir } => match cert_bar::tui::run(output_dir) {
+            // The TUI entrypoint restores the terminal via its RAII guard on
+            // every path, so here we only report the outcome to stdout/stderr.
+            Ok(()) => println!("Exited TUI"),
+            Err(e) => eprintln!("TUI exited with error: {}", e),
         },
     }
 }

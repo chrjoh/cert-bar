@@ -4,10 +4,10 @@ use cert_helper::certificate::{
 use cert_helper::crl::CrlReason;
 use num_bigint::BigUint;
 use num_traits::Num;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub enum HashAlg {
     SHA1,
     SHA256,
@@ -25,7 +25,7 @@ impl From<HashAlg> for CHHashAlg {
     }
 }
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub enum KeyType {
     RSA,
     P224,
@@ -45,6 +45,31 @@ pub enum KeyType {
     SlhDsaSha2_192s,
     #[cfg(feature = "pqc")]
     SlhDsaSha2_256s,
+}
+
+impl KeyType {
+    /// Whether a separate signature hash algorithm (`hashalg`) applies to this
+    /// key type.
+    ///
+    /// RSA and the NIST ECDSA curves sign over an externally chosen hash, so a
+    /// `hashalg` is meaningful. Ed25519 (EdDSA) and the PQC algorithms (ML-DSA,
+    /// SLH-DSA) have their hashing built in, so no `hashalg` applies — it should
+    /// be left unset and omitted from a generated config.
+    #[must_use]
+    pub fn uses_hash_alg(&self) -> bool {
+        matches!(
+            self,
+            KeyType::RSA | KeyType::P224 | KeyType::P256 | KeyType::P384 | KeyType::P521
+        )
+    }
+
+    /// Whether a selectable key length (`keylength`) applies to this key type.
+    /// Only RSA has a tunable key size here; ECDSA curves and the PQC algorithms
+    /// have a fixed size determined by the chosen variant.
+    #[must_use]
+    pub fn uses_rsa_key_length(&self) -> bool {
+        matches!(self, KeyType::RSA)
+    }
 }
 
 pub trait FromKeyType {
@@ -80,7 +105,7 @@ impl FromKeyType for CHKeyType {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum Usage {
     certsign,
     crlsign,
@@ -104,17 +129,17 @@ impl From<Usage> for CHUsage {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Certificates {
     certificates: Vec<CertificateWrapper>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CertificateWrapper {
     pub certificate: Certificate,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Certificate {
     pub id: String,
     pub parent: Option<String>,
@@ -123,23 +148,24 @@ pub struct Certificate {
     pub pkix: Pkix,
     pub keytype: KeyType,
     pub altnames: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hashalg: Option<HashAlg>,
     pub keylength: Option<u32>,
     pub validto: Option<String>,
     pub usage: Option<Vec<Usage>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CsrWrapper {
     pub csr: Csr,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SigningRequestWrapper {
     pub signing_request: SigningRequest,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Csrs {
     #[serde(default)]
     csrs: Vec<CsrWrapper>,
@@ -147,18 +173,19 @@ pub struct Csrs {
     #[serde(default)]
     signing_requests: Vec<SigningRequestWrapper>,
 }
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Csr {
     pub id: String,
     pub pkix: Pkix,
     pub keytype: KeyType,
     pub altnames: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hashalg: Option<HashAlg>,
     pub keylength: Option<u32>,
     pub usage: Option<Vec<Usage>>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct SigningRequest {
     pub csr_pem_file: String,
     pub signer: Signer,
@@ -166,12 +193,12 @@ pub struct SigningRequest {
     pub ca: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Signer {
     pub cert_pem_file: String,
     pub private_key_pem_file: String,
 }
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Pkix {
     pub commonname: String,
     pub country: String,
@@ -187,7 +214,7 @@ pub struct CsrData {
     pub to_sign: Vec<SigningRequest>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum Reason {
     Unspecified,
     KeyCompromise,
@@ -204,7 +231,7 @@ impl From<Reason> for CrlReason {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Crl {
     pub crl_file: String,
     pub signer: Signer,
@@ -212,14 +239,17 @@ pub struct Crl {
     pub revoked: Vec<RevokedCert>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RevokedCert {
     pub cert_info: CertInfo,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CertInfo {
-    #[serde(deserialize_with = "deserialize_serial")]
+    #[serde(
+        deserialize_with = "deserialize_serial",
+        serialize_with = "serialize_serial"
+    )]
     pub serial: BigUint,
     pub reason: Reason,
 }
@@ -233,16 +263,24 @@ where
     BigUint::from_str_radix(&normalized, 16).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Deserialize)]
+fn serialize_serial<S>(serial: &BigUint, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let hex = serial.to_str_radix(16);
+    serializer.serialize_str(&hex)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Cmss {
     cmss: Vec<CmsWrapper>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CmsWrapper {
     pub cms: Cms,
 }
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Cms {
     pub id: String,
     pub signer: Option<Signer>,
@@ -334,6 +372,111 @@ pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn st
     let cmss: Cmss = serde_yaml::from_str(&yaml_str)?;
     let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
     Ok(flat_cmss)
+}
+
+/// Writes a list of certificates to a YAML configuration file in the shape
+/// expected by [`read_certificate_config`].
+///
+/// # Arguments
+///
+/// * `certificates` - The certificates to serialize.
+/// * `config` - A path to the YAML configuration file to write.
+///
+/// # Errors
+///
+/// Returns an error if the certificates cannot be serialized to YAML or if the
+/// file cannot be written.
+pub fn write_certificate_config<C: AsRef<Path>>(
+    certificates: Vec<Certificate>,
+    config: C,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let wrapped = Certificates {
+        certificates: certificates
+            .into_iter()
+            .map(|certificate| CertificateWrapper { certificate })
+            .collect(),
+    };
+    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    fs::write(config, yaml_str)?;
+    Ok(())
+}
+
+/// Writes CSRs and signing requests to a YAML configuration file in the shape
+/// expected by [`read_csr_config`].
+///
+/// # Arguments
+///
+/// * `data` - The CSRs and signing requests to serialize.
+/// * `config` - A path to the YAML configuration file to write.
+///
+/// # Errors
+///
+/// Returns an error if the data cannot be serialized to YAML or if the file
+/// cannot be written.
+pub fn write_csr_config<C: AsRef<Path>>(
+    data: CsrData,
+    config: C,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let wrapped = Csrs {
+        csrs: data
+            .csrs
+            .into_iter()
+            .map(|csr| CsrWrapper { csr })
+            .collect(),
+        signing_requests: data
+            .to_sign
+            .into_iter()
+            .map(|signing_request| SigningRequestWrapper { signing_request })
+            .collect(),
+    };
+    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    fs::write(config, yaml_str)?;
+    Ok(())
+}
+
+/// Writes a CRL to a YAML configuration file in the shape expected by
+/// [`read_crl_config`].
+///
+/// # Arguments
+///
+/// * `crl` - The CRL to serialize.
+/// * `config` - A path to the YAML configuration file to write.
+///
+/// # Errors
+///
+/// Returns an error if the CRL cannot be serialized to YAML or if the file
+/// cannot be written.
+pub fn write_crl_config<C: AsRef<Path>>(
+    crl: Crl,
+    config: C,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let yaml_str = serde_yaml::to_string(&crl)?;
+    fs::write(config, yaml_str)?;
+    Ok(())
+}
+
+/// Writes a list of CMS entries to a YAML configuration file in the shape
+/// expected by [`read_cms_config`].
+///
+/// # Arguments
+///
+/// * `cmss` - The CMS entries to serialize.
+/// * `config` - A path to the YAML configuration file to write.
+///
+/// # Errors
+///
+/// Returns an error if the CMS entries cannot be serialized to YAML or if the
+/// file cannot be written.
+pub fn write_cms_config<C: AsRef<Path>>(
+    cmss: Vec<Cms>,
+    config: C,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let wrapped = Cmss {
+        cmss: cmss.into_iter().map(|cms| CmsWrapper { cms }).collect(),
+    };
+    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    fs::write(config, yaml_str)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -544,5 +687,180 @@ cmss:
                 private_key_pem_file: "signer_pkey.pem".to_string()
             })
         )
+    }
+
+    #[test]
+    fn test_write_certificate_config_round_trips() {
+        let cert = Certificate {
+            id: "cert1".to_string(),
+            parent: None,
+            signer: None,
+            ca: Some(true),
+            pkix: Pkix {
+                commonname: "Example CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Example Org".to_string(),
+            },
+            keytype: KeyType::RSA,
+            altnames: Some(vec!["example.com".to_string()]),
+            hashalg: Some(HashAlg::SHA256),
+            keylength: Some(2048),
+            validto: Some("2030-01-01".to_string()),
+            usage: Some(vec![Usage::serverauth, Usage::clientauth]),
+        };
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write_certificate_config(vec![cert], temp_file.path()).unwrap();
+
+        let certs = read_certificate_config(temp_file.path()).unwrap();
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[0].id, "cert1");
+        assert_eq!(certs[0].ca, Some(true));
+        assert_eq!(certs[0].pkix.commonname, "Example CN");
+        assert_eq!(certs[0].keytype, KeyType::RSA);
+        assert_eq!(certs[0].hashalg, Some(HashAlg::SHA256));
+        assert_eq!(certs[0].keylength, Some(2048));
+        assert_eq!(certs[0].usage.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn hashalg_is_omitted_from_yaml_when_none() {
+        // An Ed25519 cert has no hash algorithm; the serialized config must omit
+        // the `hashalg` key entirely (not write `hashalg: null`), and still
+        // round-trip back to `None`.
+        let cert = Certificate {
+            id: "ed".to_string(),
+            parent: None,
+            signer: None,
+            ca: Some(false),
+            pkix: Pkix {
+                commonname: "Ed CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Org".to_string(),
+            },
+            keytype: KeyType::Ed25519,
+            altnames: None,
+            hashalg: None,
+            keylength: None,
+            validto: None,
+            usage: None,
+        };
+
+        let wrapped = Certificates {
+            certificates: vec![CertificateWrapper {
+                certificate: cert.clone(),
+            }],
+        };
+        let yaml = serde_yaml::to_string(&wrapped).unwrap();
+        assert!(
+            !yaml.contains("hashalg"),
+            "hashalg must be omitted when None, got:\n{yaml}"
+        );
+
+        // Sanity: a cert WITH a hashalg still serializes it.
+        let mut with_hash = cert;
+        with_hash.hashalg = Some(HashAlg::SHA256);
+        let wrapped = Certificates {
+            certificates: vec![CertificateWrapper {
+                certificate: with_hash,
+            }],
+        };
+        let yaml = serde_yaml::to_string(&wrapped).unwrap();
+        assert!(yaml.contains("hashalg"), "hashalg must serialize when Some");
+    }
+
+    #[test]
+    fn test_write_csr_config_round_trips() {
+        let csr = Csr {
+            id: "csr1".to_string(),
+            pkix: Pkix {
+                commonname: "Example CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Example Org".to_string(),
+            },
+            keytype: KeyType::RSA,
+            altnames: None,
+            hashalg: Some(HashAlg::SHA256),
+            keylength: Some(2048),
+            usage: None,
+        };
+        let signing_request = SigningRequest {
+            csr_pem_file: "csr.pem".to_string(),
+            signer: Signer {
+                cert_pem_file: "signer_cert.pem".to_string(),
+                private_key_pem_file: "signer_pkey.pem".to_string(),
+            },
+            validto: Some("2030-01-01".to_string()),
+            ca: Some(true),
+        };
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write_csr_config(
+            CsrData {
+                csrs: vec![csr],
+                to_sign: vec![signing_request.clone()],
+            },
+            temp_file.path(),
+        )
+        .unwrap();
+
+        let data = read_csr_config(temp_file.path()).unwrap();
+        assert_eq!(data.csrs.len(), 1);
+        assert_eq!(data.csrs[0].id, "csr1");
+        assert_eq!(data.to_sign.len(), 1);
+        assert_eq!(data.to_sign[0], signing_request);
+    }
+
+    #[test]
+    fn test_write_crl_config_round_trips_serial_as_hex() {
+        let serial =
+            BigUint::from_str_radix("224a77d33809ab2f6524c7cda6ae22e1ce1e7ad9", 16).unwrap();
+        let crl = Crl {
+            crl_file: "file_cer.pem".to_string(),
+            signer: Signer {
+                cert_pem_file: "signer_cert.pem".to_string(),
+                private_key_pem_file: "signer_pkey.pem".to_string(),
+            },
+            revoked: vec![RevokedCert {
+                cert_info: CertInfo {
+                    serial: serial.clone(),
+                    reason: Reason::KeyCompromise,
+                },
+            }],
+        };
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write_crl_config(crl, temp_file.path()).unwrap();
+
+        let data = read_crl_config(temp_file.path()).unwrap();
+        assert_eq!(data.crl_file, "file_cer.pem");
+        assert_eq!(data.revoked.len(), 1);
+        assert_eq!(data.revoked[0].cert_info.serial, serial);
+    }
+
+    #[test]
+    fn test_write_cms_config_round_trips() {
+        let cms = Cms {
+            id: "test1".to_string(),
+            signer: Some(Signer {
+                cert_pem_file: "signer_cert.pem".to_string(),
+                private_key_pem_file: "signer_pkey.pem".to_string(),
+            }),
+            recipient: Some("client2encrypt_cert.pem".to_string()),
+            data_file: "./examples/message.txt".to_string(),
+            detached: None,
+        };
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write_cms_config(vec![cms], temp_file.path()).unwrap();
+
+        let data = read_cms_config(temp_file.path()).unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "test1");
+        assert_eq!(
+            data[0].recipient,
+            Some("client2encrypt_cert.pem".to_string())
+        );
+        assert_eq!(data[0].data_file, "./examples/message.txt");
     }
 }

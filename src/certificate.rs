@@ -61,7 +61,16 @@ impl CertificateSaver for RealCertificateSaver {
         path: &str,
         id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        cert.cert.save(path, id)
+        // Defense in depth: reject a traversal-bearing id before writing so a
+        // config that bypasses the TUI boundary cannot escape `path`. The
+        // canonical user-facing check lives in src/tui/convert.rs.
+        crate::secure_file::reject_unsafe_path_component(id)?;
+        cert.cert.save(path, id)?;
+        // Generated private keys are written world-readable by default; restrict
+        // them to owner-only so other local users can't read them. Surface a
+        // chmod failure rather than reporting a false success.
+        crate::secure_file::harden_private_key(path, id)?;
+        Ok(())
     }
 }
 
@@ -129,7 +138,11 @@ fn create_inner<C: AsRef<Path>>(
                 ready_queue.push_back(cert.id.clone());
                 queued.insert(cert.id.clone());
             }
-        } else if cert.signer.is_some() {
+        } else {
+            // No parent: either a file-signed cert or a standalone self-signed
+            // root (`parent: None && signer: None`). Both are immediately ready —
+            // a self-signed root flows through the loop with `signer_cert = None`,
+            // which routes to `build_and_self_sign` in `create_certificate`.
             ready_queue.push_back(cert.id.clone());
             queued.insert(cert.id.clone());
         }
@@ -168,7 +181,6 @@ fn create_inner<C: AsRef<Path>>(
             }
         }
     }
-    println!("\nAll certificates created:");
     for (id, v) in &created {
         let path = output_dir
             .as_ref()
@@ -408,6 +420,59 @@ mod tests {
 
         let result = create_inner(certs, &mock_loader, &mock_creator, &mock_saver, "");
 
+        result.unwrap();
+    }
+
+    #[test]
+    fn test_self_signed_root_without_parent_or_signer_is_created_and_saved() {
+        // Setup: a standalone self-signed root with no parent and no file signer —
+        // the shape the TUI cert form defaults to. Previously this was never enqueued.
+        let root_cert = Certificate {
+            ca: Some(true),
+            keytype: KeyType::Ed25519,
+            id: "standalone".to_string(),
+            pkix: Pkix::default(),
+            altnames: None,
+            hashalg: None,
+            keylength: None,
+            validto: None,
+            usage: None,
+            parent: None,
+            signer: None,
+        };
+        let certs = vec![root_cert];
+
+        let mock_loader = MockSignerLoader::new();
+        let mut mock_creator = MockCertificateCreator::new();
+        let mut mock_saver = MockCertificateSaver::new();
+
+        let root = CertBuilder::new()
+            .is_ca(true)
+            .common_name("standalone")
+            .build_and_self_sign()
+            .unwrap();
+        let created_root = CreatedCertificate {
+            id: "standalone".to_string(),
+            cert: root,
+        };
+
+        // Expect: created exactly once, self-signed (no signer passed in).
+        mock_creator
+            .expect_create()
+            .times(1)
+            .withf(|cert, signer| cert.id == "standalone" && signer.is_none())
+            .returning(move |_, _| Ok(created_root.clone()));
+
+        // Expect: saved exactly once.
+        mock_saver
+            .expect_save()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        // Invoke.
+        let result = create_inner(certs, &mock_loader, &mock_creator, &mock_saver, "");
+
+        // Expect: success (mock expectations verify the single create + save on drop).
         result.unwrap();
     }
 

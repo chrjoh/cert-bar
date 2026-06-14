@@ -80,7 +80,12 @@ fn handle_sign<C: AsRef<Path>>(
         .and_then(|stem| stem.to_str())
         .unwrap_or("");
 
-    signed_cert.save(output_dir, filename)?;
+    let dir = output_dir.as_ref().to_path_buf();
+    signed_cert.save(&dir, filename)?;
+    // Best-effort: signing an existing CSR produces a certificate (no new key),
+    // but harden any key file that may be written for consistency; surface a
+    // chmod failure rather than reporting a false success.
+    crate::secure_file::harden_private_key(&dir, filename)?;
     Ok(())
 }
 
@@ -118,7 +123,15 @@ fn handle_csr<C: AsRef<Path>>(csr: Csr, output_dir: C) -> Result<(), Box<dyn std
         builder = builder.key_usage(usage_set);
     }
     let csr_request = builder.certificate_signing_request()?;
-    csr_request.save(output_dir, &csr.id)?;
+    let dir = output_dir.as_ref().to_path_buf();
+    // Defense in depth: reject a traversal-bearing id before writing so a config
+    // that bypasses the TUI boundary cannot escape `dir`. The canonical
+    // user-facing check lives in src/tui/convert.rs.
+    crate::secure_file::reject_unsafe_path_component(&csr.id)?;
+    csr_request.save(&dir, &csr.id)?;
+    // Lock the freshly generated CSR private key to owner-only; surface a chmod
+    // failure rather than reporting a false success.
+    crate::secure_file::harden_private_key(&dir, &csr.id)?;
 
     Ok(())
 }
