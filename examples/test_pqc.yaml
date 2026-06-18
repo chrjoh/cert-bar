@@ -76,4 +76,8 @@ certificates:
         country: "SE"
         organization: "NIST PQC SPHINCSplus High"
       keytype: SlhDsaSha2_256s
+      usage:
+        - signature
+        - clientauth
+        - contentcommitment
       validto: "2034-01-01"
