@@ -47,7 +47,7 @@ enum Commands {
     #[cfg(feature = "tui")]
     Tui {
         /// Default output directory pre-filled in the generate / save prompts
-        #[arg(short, long, default_value = "./certs")]
+        #[arg(short, long, default_value = "./")]
         output_dir: String,
     },
 }
