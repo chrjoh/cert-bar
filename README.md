@@ -103,6 +103,8 @@ In addition to the classical key types, **certificates**, **CSRs**, and **CRLs**
 - `MlDsa44`, `MlDsa65`, `MlDsa87` — FIPS 204 (ML-DSA, formerly Dilithium)
 - `SlhDsaSha2_128s`, `SlhDsaSha2_192s`, `SlhDsaSha2_256s` — FIPS 205 (SLH-DSA, formerly SPHINCS+)
 
+> **Scope note.** The key usage encipherment can not be used with these keys as sign and cannot encrypt.
+
 To enable PQC support build with:
 
 ```bash
