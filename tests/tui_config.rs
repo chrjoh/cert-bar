@@ -44,6 +44,7 @@ mod round_trip {
         let full = Certificate {
             id: "ca".to_string(),
             parent: Some("ca".to_string()),
+            policies: None,
             signer: Some(Signer {
                 cert_pem_file: "s_cert.pem".to_string(),
                 private_key_pem_file: "s_key.pem".to_string(),
@@ -63,6 +64,7 @@ mod round_trip {
         };
         let bare = Certificate {
             id: "leaf".to_string(),
+            policies: None,
             parent: None,
             signer: None,
             ca: None,
@@ -129,6 +131,7 @@ mod round_trip {
                 private_key_pem_file: "k.pem".to_string(),
             },
             validto: None,
+            policies: None,
             ca: None,
         };
 
@@ -305,6 +308,7 @@ revoked:
         let ca = Certificate {
             id: "rt-ca".to_string(),
             parent: None,
+            policies: None,
             signer: None,
             ca: Some(true),
             pkix: Pkix {
@@ -322,6 +326,7 @@ revoked:
         let intermediate = Certificate {
             id: "rt-int".to_string(),
             parent: Some("rt-ca".to_string()),
+            policies: None,
             signer: None,
             ca: Some(true),
             pkix: Pkix {
@@ -339,6 +344,7 @@ revoked:
         let leaf = Certificate {
             id: "rt-leaf".to_string(),
             parent: Some("rt-int".to_string()),
+            policies: None,
             signer: None,
             ca: Some(false),
             pkix: Pkix {
@@ -405,6 +411,7 @@ mod cms_error_propagation {
     fn make_rsa_recipient(dir: &Path, id: &str) -> String {
         let cert = Certificate {
             id: id.to_string(),
+            policies: None,
             parent: Some(id.to_string()),
             signer: None,
             ca: Some(false),
@@ -430,6 +437,7 @@ mod cms_error_propagation {
             id: id.to_string(),
             parent: Some(id.to_string()),
             signer: None,
+            policies: None,
             ca: Some(false),
             pkix: pkix(id),
             keytype: KeyType::P256,

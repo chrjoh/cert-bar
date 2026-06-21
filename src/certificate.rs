@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use crate::config::{Certificate, CreatedCertificate, FromKeyType, Signer};
 use cert_helper::certificate::{
-    CertBuilder, Certificate as CHCertificate, HashAlg as CHHashAlg, KeyType as CHKeyType,
-    Usage as CHUsage, UseesBuilderFields, X509Common,
+    CertBuilder, Certificate as CHCertificate, CertificatePolicy as CHCertificatePolicy,
+    HashAlg as CHHashAlg, KeyType as CHKeyType, Usage as CHUsage, UseesBuilderFields, X509Common,
 };
 use std::path::Path;
 
@@ -207,6 +207,12 @@ fn create_certificate(
         .unwrap_or_default();
     let key_type = CHKeyType::from_key_type(cert.keytype.clone(), cert.keylength);
 
+    let policies: Vec<CHCertificatePolicy> = cert
+        .policies
+        .as_ref()
+        .map(|vec| vec.iter().cloned().map(CHCertificatePolicy::from).collect())
+        .unwrap_or_default();
+
     // Skip hash check for Ed25519 and PQC keys (they handle hashing internally via cert_helper)
     let skip_hash_check = match key_type {
         CHKeyType::Ed25519 => true,
@@ -230,7 +236,8 @@ fn create_certificate(
         .alternative_names(alt_names_as_str_vec)
         .key_usage(usage)
         .key_type(key_type)
-        .is_ca(cert.ca.unwrap_or(false));
+        .is_ca(cert.ca.unwrap_or(false))
+        .certificate_policies(policies);
     if let Some(hash_alg) = &cert.hashalg {
         builder = builder.signature_alg(CHHashAlg::from(hash_alg.clone()));
     }
@@ -262,7 +269,7 @@ fn load_signer_from_file(
 mod tests {
     use super::*;
 
-    use crate::config::{KeyType, Pkix};
+    use crate::config::{KeyType, Pkix, Policies};
 
     use cert_helper::certificate::{CertBuilder, UseesBuilderFields};
     use mockall::{mock, predicate::*};
@@ -310,6 +317,7 @@ mod tests {
             keylength: None,
             validto: None,
             usage: None,
+            policies: None,
             parent: None,
             signer: Some(Signer {
                 cert_pem_file: "root.pem".to_string(),
@@ -323,6 +331,7 @@ mod tests {
             parent: Some("root".to_string()),
             pkix: Pkix::default(),
             altnames: None,
+            policies: None,
             hashalg: Some(crate::config::HashAlg::SHA256),
             keylength: None,
             validto: None,
@@ -336,6 +345,7 @@ mod tests {
             ca: None,
             keytype: KeyType::P224,
             pkix: Pkix::default(),
+            policies: Some(vec![Policies::DomainValidated]),
             altnames: None,
             hashalg: Some(crate::config::HashAlg::SHA256),
             keylength: None,
@@ -408,7 +418,9 @@ mod tests {
         mock_creator
             .expect_create()
             .withf(|cert, signer| {
-                cert.id == "child" && signer.map(|s| s.id.as_str()) == Some("inter")
+                cert.id == "child"
+                    && signer.map(|s| s.id.as_str()) == Some("inter")
+                    && cert.policies.as_deref() == Some(&[Policies::DomainValidated][..])
             })
             .returning(move |_, _| Ok(child_for_creator.clone()));
 
@@ -433,6 +445,7 @@ mod tests {
             id: "standalone".to_string(),
             pkix: Pkix::default(),
             altnames: None,
+            policies: None,
             hashalg: None,
             keylength: None,
             validto: None,

@@ -1,5 +1,6 @@
 use cert_helper::certificate::{
-    Certificate as CHCertificate, HashAlg as CHHashAlg, KeyType as CHKeyType, Usage as CHUsage,
+    Certificate as CHCertificate, CertificatePolicy as CHCertificatePolicy, HashAlg as CHHashAlg,
+    KeyType as CHKeyType, Usage as CHUsage,
 };
 use cert_helper::crl::CrlReason;
 use num_bigint::BigUint;
@@ -21,6 +22,26 @@ impl From<HashAlg> for CHHashAlg {
             HashAlg::SHA384 => CHHashAlg::SHA384,
             HashAlg::SHA512 => CHHashAlg::SHA512,
             _ => CHHashAlg::SHA256,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub enum Policies {
+    DomainValidated,
+    OrganizationValidated,
+    IndividualValidated,
+    ExtendedValidation,
+    AnyPolicy,
+}
+impl From<Policies> for CHCertificatePolicy {
+    fn from(h: Policies) -> Self {
+        match h {
+            Policies::DomainValidated => CHCertificatePolicy::DomainValidated,
+            Policies::OrganizationValidated => CHCertificatePolicy::OrganizationValidated,
+            Policies::IndividualValidated => CHCertificatePolicy::IndividualValidated,
+            Policies::ExtendedValidation => CHCertificatePolicy::ExtendedValidation,
+            Policies::AnyPolicy => CHCertificatePolicy::AnyPolicy,
         }
     }
 }
@@ -153,6 +174,8 @@ pub struct Certificate {
     pub keylength: Option<u32>,
     pub validto: Option<String>,
     pub usage: Option<Vec<Usage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<Policies>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -191,6 +214,8 @@ pub struct SigningRequest {
     pub signer: Signer,
     pub validto: Option<String>,
     pub ca: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<Policies>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -513,6 +538,7 @@ certificates:
       parent: null
       signer: null
       ca: true
+      policies: [AnyPolicy]
       pkix:
         commonname: "Example CN"
         country: "SE"
@@ -544,6 +570,7 @@ certificates:
         assert_eq!(cert.hashalg, Some(HashAlg::SHA256));
         assert_eq!(cert.keylength, Some(2048));
         assert_eq!(cert.usage.as_ref().unwrap().len(), 2);
+        assert_eq!(cert.policies.as_ref().unwrap().len(), 1);
     }
 
     #[test]
@@ -591,6 +618,7 @@ signing_requests:
         csr_pem_file: "csr.pem"
         validto: "2030-01-01"
         ca: true
+        policies: [AnyPolicy]
         signer:
             cert_pem_file: signer_cert.pem
             private_key_pem_file: signer_pkey.pem
@@ -614,6 +642,7 @@ signing_requests:
                 csr_pem_file: "csr.pem".to_string(),
                 validto: Some("2030-01-01".to_string()),
                 ca: Some(true),
+                policies: Some(vec![Policies::AnyPolicy]),
                 signer: Signer {
                     cert_pem_file: "signer_cert.pem".to_string(),
                     private_key_pem_file: "signer_pkey.pem".to_string()
@@ -707,6 +736,7 @@ cmss:
             keylength: Some(2048),
             validto: Some("2030-01-01".to_string()),
             usage: Some(vec![Usage::serverauth, Usage::clientauth]),
+            policies: Some(vec![Policies::AnyPolicy]),
         };
 
         let temp_file = NamedTempFile::new().expect("Failed to create temp file");
@@ -721,6 +751,7 @@ cmss:
         assert_eq!(certs[0].hashalg, Some(HashAlg::SHA256));
         assert_eq!(certs[0].keylength, Some(2048));
         assert_eq!(certs[0].usage.as_ref().unwrap().len(), 2);
+        assert_eq!(certs[0].policies.as_ref().unwrap().len(), 1);
     }
 
     #[test]
@@ -733,6 +764,7 @@ cmss:
             parent: None,
             signer: None,
             ca: Some(false),
+            policies: None,
             pkix: Pkix {
                 commonname: "Ed CN".to_string(),
                 country: "SE".to_string(),
@@ -792,6 +824,7 @@ cmss:
             },
             validto: Some("2030-01-01".to_string()),
             ca: Some(true),
+            policies: None,
         };
 
         let temp_file = NamedTempFile::new().expect("Failed to create temp file");

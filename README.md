@@ -197,7 +197,7 @@ The options for each keywords is(\* denote required values)
 | validto         | End date then the certificate is not valid, default is 1 year                                                        | string: 2020-01-01                           |
 | signer          | if points to signer cert and private key file key                                                                    | see above for example                        |
 | usage           | Key usage to ad to the certificates, see list below for options                                                      | list of strings                              |
-
+| policies | optional certificate policies to add | list of AnyPolicy, DomainValidation, OrganizationValidated, IndividualValidated, ExtendedValidation|
 ### Key usage
 
 If empty, if CA is true keys to sign certificates and crl lista are added, otherwise client and

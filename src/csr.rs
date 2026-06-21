@@ -1,8 +1,9 @@
 #![allow(dead_code, unused_imports)]
 use crate::config::{Certificate, Csr, FromKeyType, KeyType, SigningRequest};
 use cert_helper::certificate::{
-    Certificate as CHCertificate, Csr as CGCsr, CsrBuilder, CsrOptions, HashAlg as CHHashAlg,
-    KeyType as CHKeyType, Usage as CHUsage, UseesBuilderFields, X509Common,
+    Certificate as CHCertificate, CertificatePolicy as CHCertificatePolicy, Csr as CGCsr,
+    CsrBuilder, CsrOptions, HashAlg as CHHashAlg, KeyType as CHKeyType, Usage as CHUsage,
+    UseesBuilderFields, X509Common,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -73,6 +74,12 @@ fn handle_sign<C: AsRef<Path>>(
         &csr.signer.cert_pem_file,
         &csr.signer.private_key_pem_file,
     )?;
+    let policies: Vec<CHCertificatePolicy> = csr
+        .policies
+        .as_ref()
+        .map(|vec| vec.iter().cloned().map(CHCertificatePolicy::from).collect())
+        .unwrap_or_default();
+    let option = option.certificate_policies(policies.clone());
     let signed_cert = csr_to_sign.build_signed_certificate(&signer, option)?;
 
     let filename = Path::new(&csr.csr_pem_file)
@@ -261,6 +268,7 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
             csr_pem_file: csr_pem_file.clone(),
             signer,
             validto: Some("2026-07-01".to_string()),
+            policies: None,
             ca: Some(true),
         };
 

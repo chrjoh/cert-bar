@@ -1,0 +1,45 @@
+certificates:
+  - certificate:
+      id: webmainca
+      parent: webmainca
+      ca: true
+      policies:
+        - AnyPolicy
+      pkix:
+        commonname: www.foo.se
+        country: SE
+        organization: test
+        organizationunit: testcaecdsa
+      keytype: P256
+      hashalg: SHA256
+      usage:
+        - signature
+        - encipherment
+      validto: 2034-01-01
+  - certificate:
+      id: webinterca
+      parent: webmainca
+      ca: true
+      policies:
+        - AnyPolicy
+      pkix:
+        commonname: www.bar.se
+        country: SE
+        organization: test
+        organizationunit: webinterca
+      keytype: P256
+      hashalg: SHA256
+  - certificate:
+      id: webclient
+      parent: webinterca
+      policies:
+        - DomainValidated
+      pkix:
+        commonname: www.baz.se
+        country: SE
+        organization: test
+        organizationunit: testweb
+      keytype: P256
+      hashalg: SHA256
+      usage:
+        - serverauth
