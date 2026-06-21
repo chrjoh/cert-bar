@@ -507,6 +507,7 @@ mod tests {
                 parent: None,
                 signer: None,
                 ca: Some(ca),
+                policies: None,
                 pkix: Pkix {
                     commonname: id.to_string(),
                     country: "SE".to_string(),
