@@ -20,6 +20,7 @@
 //! | 12  | key length       | text input (RSA only)           |
 //! | 13  | signer cert pem  | text input (sign mode, path)    |
 //! | 14  | signer key pem   | text input (sign mode, path)    |
+//! | 15  | policies         | multi-select (sign mode)        |
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -31,7 +32,8 @@ use super::widgets::{
     toggle_row,
 };
 use crate::tui::app::{
-    App, CsrForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
+    App, CsrForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
+    RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
 };
 use crate::tui::theme::Theme;
 
@@ -143,6 +145,8 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, th
     );
     let usage_opts: Vec<String> = USAGE_OPTIONS.iter().map(|o| format!("{o:?}")).collect();
     let usage_len = usage_opts.len();
+    let policy_opts: Vec<String> = POLICY_OPTIONS.iter().map(|o| format!("{o:?}")).collect();
+    let policy_len = policy_opts.len();
 
     // `hash alg` only applies to RSA/ECDSA; for Ed25519 and PQC keys show that it
     // is not used (convert leaves it unset so it is omitted from saved YAML).
@@ -215,12 +219,24 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, th
             f == 14,
             theme,
         ),
+        Line::from(""),
+        header("Certificate policies (sign mode)", theme),
     ]);
+    let policy_start = lines.len();
+    lines.extend(multiselect_rows(
+        "policies",
+        &policy_opts,
+        &form.policies,
+        form.policies_cursor,
+        f == 15,
+        theme,
+    ));
 
     // Line index of the focused field (see cert.rs). Rows after the usage group
     // are, in order: sign mode (7), alt names (8), key length (12), blank,
     // header, csr pem (9), valid to (10), CA (11), signer cert pem (13),
-    // signer key pem (14).
+    // signer key pem (14), blank, header, then the policies group (15) tracked
+    // by `policy_start`.
     let active_line = match f {
         0..=5 => f,
         6 => usage_start + form.usage_cursor.min(usage_len.saturating_sub(1)),
@@ -231,7 +247,8 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CsrForm, app: &App, th
         10 => after_usage + 6, // valid to
         11 => after_usage + 7, // CA
         13 => after_usage + 8, // signer cert pem
-        _ => after_usage + 9,  // field 14 (signer key pem)
+        14 => after_usage + 9, // signer key pem
+        _ => policy_start + form.policies_cursor.min(policy_len.saturating_sub(1)),
     };
 
     let total = app.csr_list.len();
@@ -327,6 +344,23 @@ mod tests {
             out.contains("ca.key"),
             "signer key buffer (field 14) should render"
         );
+    }
+
+    #[test]
+    fn policies_section_renders_every_option() {
+        // Tall enough that the bottom policies section is visible.
+        let app = csr_app();
+        let out = render_sized(&app, 60, 48);
+        assert!(
+            out.contains("Certificate policies"),
+            "policies header renders"
+        );
+        for opt in POLICY_OPTIONS {
+            assert!(
+                out.contains(&format!("{opt:?}")),
+                "policy option {opt:?} must be visible (one per row)"
+            );
+        }
     }
 
     #[test]

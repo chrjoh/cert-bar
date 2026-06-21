@@ -26,6 +26,7 @@
 //! | 11  | parent           | text input (optional)           |
 //! | 12  | signer cert pem  | text input (optional, path)     |
 //! | 13  | signer key pem   | text input (optional, path)     |
+//! | 14  | policies         | multi-select (`POLICY_OPTIONS`)  |
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -37,7 +38,8 @@ use super::widgets::{
     toggle_row,
 };
 use crate::tui::app::{
-    App, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
+    App, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
+    RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
 };
 use crate::tui::theme::Theme;
 
@@ -144,6 +146,8 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
     );
     let usage_opts: Vec<String> = USAGE_OPTIONS.iter().map(|o| format!("{o:?}")).collect();
     let usage_len = usage_opts.len();
+    let policy_opts: Vec<String> = POLICY_OPTIONS.iter().map(|o| format!("{o:?}")).collect();
+    let policy_len = policy_opts.len();
 
     // `hash alg` only applies to RSA/ECDSA; for Ed25519 and PQC keys show that it
     // is not used (and convert leaves it unset so it is omitted from saved YAML).
@@ -200,19 +204,33 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
         header("Signer (optional, when no parent)", theme),
         path_row("cert pem", &form.signer.cert_pem_file, f == 12, theme),
         path_row("key pem", &form.signer.private_key_pem_file, f == 13, theme),
+        Line::from(""),
+        header("Certificate policies", theme),
     ]);
+    let policy_start = lines.len();
+    lines.extend(multiselect_rows(
+        "policies",
+        &policy_opts,
+        &form.policies,
+        form.policies_cursor,
+        f == 14,
+        theme,
+    ));
 
     // Line index of the focused field, so the form scrolls to keep it visible.
     // The usage group (field 6) spans `usage_len` rows; its active line is the
     // highlighted option. Fields after it are offset by the extra usage rows.
     // Fields 12/13 sit past the blank spacer + the "Signer" header, so they are
-    // offset by an additional 2 lines beyond the 7..=11 block start.
+    // offset by an additional 2 lines beyond the 7..=11 block start. Field 14
+    // (the policies multi-select) sits past a second blank + header, tracked by
+    // `policy_start`.
     let active_line = match f {
         0..=5 => f,
         6 => usage_start + form.usage_cursor.min(usage_len.saturating_sub(1)),
         7..=11 => after_usage + (f - 7),
         12 => after_usage + 7, // signer cert pem: 5 rows (7..=11) + blank + header
-        _ => after_usage + 8,  // field 13 (signer key pem)
+        13 => after_usage + 8, // signer key pem
+        _ => policy_start + form.policies_cursor.min(policy_len.saturating_sub(1)),
     };
 
     let total = app.cert_list.len();
@@ -337,6 +355,34 @@ mod tests {
         assert!(
             out.contains("> "),
             "the highlighted usage option shows a '>' cursor marker"
+        );
+    }
+
+    #[test]
+    fn policies_section_renders_every_option() {
+        // Tall enough that the bottom policies section is visible.
+        let app = cert_app();
+        let out = render_sized(&app, 60, 48);
+        assert!(
+            out.contains("Certificate policies"),
+            "policies header renders"
+        );
+        for opt in POLICY_OPTIONS {
+            assert!(
+                out.contains(&format!("{opt:?}")),
+                "policy option {opt:?} must be visible (one per row)"
+            );
+        }
+    }
+
+    #[test]
+    fn policies_show_cursor_marker_when_focused() {
+        let mut app = cert_app();
+        app.cert_mut().field = 14; // focus the policies group
+        let out = render_sized(&app, 60, 48);
+        assert!(
+            out.contains("> "),
+            "the highlighted policy option shows a '>' cursor marker"
         );
     }
 

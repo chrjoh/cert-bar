@@ -17,12 +17,12 @@ use num_bigint::BigUint;
 use num_traits::Num;
 
 use crate::config::{
-    CertInfo, Certificate, Cms, Crl, Csr, CsrData, HashAlg, KeyType, Pkix, Reason, RevokedCert,
-    Signer, SigningRequest, Usage,
+    CertInfo, Certificate, Cms, Crl, Csr, CsrData, HashAlg, KeyType, Pkix, Policies, Reason,
+    RevokedCert, Signer, SigningRequest, Usage,
 };
 use crate::tui::app::{
-    CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, REASON_OPTIONS,
-    RSA_KEY_LENGTH_OPTIONS, RevokedRow, SignerState, USAGE_OPTIONS,
+    CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
+    REASON_OPTIONS, RSA_KEY_LENGTH_OPTIONS, RevokedRow, SignerState, USAGE_OPTIONS,
 };
 
 /// Typed conversion/validation error, mapped to a `String` at the public
@@ -126,6 +126,7 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
         keylength,
         validto: optional(&form.valid_to),
         usage: usage(&form.usage),
+        policies: policies(&form.policies),
     })
 }
 
@@ -153,6 +154,7 @@ fn csr_from_form_inner(form: &CsrForm) -> Result<CsrData, ConvertError> {
             signer,
             validto: optional(&form.valid_to),
             ca: Some(form.ca),
+            policies: policies(&form.policies),
         };
         return Ok(CsrData {
             csrs: Vec::new(),
@@ -290,6 +292,8 @@ pub fn cert_to_form(cert: &Certificate) -> CertForm {
         valid_to: opt_buffer(&cert.validto),
         parent: opt_buffer(&cert.parent),
         signer: signer_state(&cert.signer),
+        policies: policy_flags(&cert.policies),
+        policies_cursor: 0,
         field: 0,
     }
 }
@@ -330,6 +334,7 @@ pub fn signing_request_to_form(req: &SigningRequest) -> CsrForm {
         signer: signer_state_req(&req.signer),
         valid_to: opt_buffer(&req.validto),
         ca: req.ca.unwrap_or(false),
+        policies: policy_flags(&req.policies),
         ..CsrForm::default()
     }
 }
@@ -414,6 +419,20 @@ fn usage_flags(usage: &Option<Vec<Usage>>) -> Vec<bool> {
     if let Some(selected) = usage {
         for value in selected {
             if let Some(idx) = USAGE_OPTIONS.iter().position(|u| *u == *value) {
+                flags[idx] = true;
+            }
+        }
+    }
+    flags
+}
+
+/// Maps an optional config policies list back to the parallel `Vec<bool>` toggle
+/// vector (one `bool` per [`POLICY_OPTIONS`] entry). `None` -> all `false`.
+fn policy_flags(policies: &Option<Vec<Policies>>) -> Vec<bool> {
+    let mut flags = vec![false; POLICY_OPTIONS.len()];
+    if let Some(selected) = policies {
+        for value in selected {
+            if let Some(idx) = POLICY_OPTIONS.iter().position(|p| *p == *value) {
                 flags[idx] = true;
             }
         }
@@ -548,6 +567,23 @@ fn usage(flags: &[bool]) -> Option<Vec<Usage>> {
         .zip(flags.iter())
         .filter(|&(_, &on)| on)
         .map(|(usage, _)| usage.clone())
+        .collect();
+    if selected.is_empty() {
+        None
+    } else {
+        Some(selected)
+    }
+}
+
+/// Maps the parallel `policies` toggle vector to the selected [`Policies`]
+/// values (certificate policies extension). Returns `None` when nothing is
+/// selected, so it is omitted from the saved config.
+fn policies(flags: &[bool]) -> Option<Vec<Policies>> {
+    let selected: Vec<Policies> = POLICY_OPTIONS
+        .iter()
+        .zip(flags.iter())
+        .filter(|&(_, &on)| on)
+        .map(|(policy, _)| policy.clone())
         .collect();
     if selected.is_empty() {
         None
@@ -770,6 +806,22 @@ mod tests {
         fn no_usage_selected_maps_to_none() {
             let cert = cert_from_form(&filled_cert()).unwrap();
             assert!(cert.usage.is_none());
+        }
+
+        #[test]
+        fn selected_policy_flags_map_to_policies_list() {
+            let mut form = filled_cert();
+            form.policies = vec![false; POLICY_OPTIONS.len()];
+            form.policies[0] = true; // DomainValidated
+            let cert = cert_from_form(&form).unwrap();
+            let selected = cert.policies.unwrap();
+            assert_eq!(selected, vec![POLICY_OPTIONS[0].clone()]);
+        }
+
+        #[test]
+        fn no_policy_selected_maps_to_none() {
+            let cert = cert_from_form(&filled_cert()).unwrap();
+            assert!(cert.policies.is_none());
         }
 
         #[test]
@@ -1165,6 +1217,31 @@ mod tests {
         }
 
         #[test]
+        fn policy_flags_sets_exactly_present_indices() {
+            let policies = Some(vec![
+                Policies::DomainValidated,
+                Policies::ExtendedValidation,
+            ]);
+            let flags = policy_flags(&policies);
+            let mut expected = vec![false; POLICY_OPTIONS.len()];
+            for (i, opt) in POLICY_OPTIONS.iter().enumerate() {
+                if matches!(
+                    opt,
+                    Policies::DomainValidated | Policies::ExtendedValidation
+                ) {
+                    expected[i] = true;
+                }
+            }
+            assert_eq!(flags, expected);
+        }
+
+        #[test]
+        fn policy_flags_none_maps_to_all_false() {
+            let flags = policy_flags(&None);
+            assert_eq!(flags, vec![false; POLICY_OPTIONS.len()]);
+        }
+
+        #[test]
         fn altnames_buffer_joins_and_resplits_losslessly() {
             // Setup
             let names = Some(vec!["a.com".to_string(), "b.com".to_string()]);
@@ -1233,6 +1310,8 @@ mod tests {
                 .unwrap();
             form.usage[0] = true;
             form.usage[2] = true;
+            form.policies[0] = true;
+            form.policies[3] = true;
             form.signer.cert_pem_file = "c.pem".to_string();
             form.signer.private_key_pem_file = "k.pem".to_string();
             form
@@ -1254,6 +1333,7 @@ mod tests {
             assert_eq!(restored.key_length, original.key_length);
             assert_eq!(restored.hash_alg, original.hash_alg);
             assert_eq!(restored.usage, original.usage);
+            assert_eq!(restored.policies, original.policies);
             assert_eq!(restored.altnames, original.altnames);
             assert_eq!(restored.ca, original.ca);
             assert_eq!(restored.valid_to, original.valid_to);
@@ -1294,6 +1374,7 @@ mod tests {
             assert_eq!(restored.signer.cert_pem_file, "");
             assert_eq!(restored.signer.private_key_pem_file, "");
             assert_eq!(restored.usage, vec![false; USAGE_OPTIONS.len()]);
+            assert_eq!(restored.policies, vec![false; POLICY_OPTIONS.len()]);
         }
     }
 
@@ -1330,7 +1411,7 @@ mod tests {
         #[test]
         fn sign_mode_round_trips() {
             // Setup
-            let original = CsrForm {
+            let mut original = CsrForm {
                 sign_mode: true,
                 csr_pem_file: "req.pem".to_string(),
                 valid_to: "2030-01-01".to_string(),
@@ -1341,6 +1422,7 @@ mod tests {
                 },
                 ..CsrForm::default()
             };
+            original.policies[0] = true;
 
             // Invoke: forward (one signing request) then reverse.
             let data = csr_from_form(&original).unwrap();
@@ -1353,6 +1435,7 @@ mod tests {
             assert!(restored.ca);
             assert_eq!(restored.signer.cert_pem_file, "c.pem");
             assert_eq!(restored.signer.private_key_pem_file, "k.pem");
+            assert_eq!(restored.policies, original.policies);
         }
     }
 

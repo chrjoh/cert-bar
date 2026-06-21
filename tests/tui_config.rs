@@ -1302,6 +1302,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: Some(usage),
+            policies: None,
         };
         certificate::create(vec![ca], dir).unwrap();
         Signer {
@@ -1326,6 +1327,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: Some(vec![Usage::certsign]),
+            policies: None,
         };
 
         // Invoke & Expect.
@@ -1353,6 +1355,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: Some(vec![Usage::certsign]),
+            policies: None,
         };
         certificate::create(vec![cert], dir.path()).unwrap();
 
@@ -1389,6 +1392,7 @@ mod generation {
             keylength: Some(4096),
             validto: None,
             usage: None,
+            policies: None,
         };
         certificate::create(vec![cert], dir.path()).unwrap();
         assert!(dir.path().join("rsa-ca_cert.pem").exists());
@@ -1471,6 +1475,7 @@ mod generation {
             signer,
             validto: None,
             ca: Some(false),
+            policies: None,
         };
         csr::sign_requests(vec![req], dir.path()).unwrap();
 
@@ -1518,6 +1523,7 @@ mod generation {
             keylength: Some(2048),
             validto: None,
             usage: Some(vec![Usage::signature, Usage::encipherment]),
+            policies: None,
         };
         certificate::create(vec![cert], dir).unwrap();
         (
@@ -1606,6 +1612,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: None,
+            policies: None,
         };
 
         // Invoke.
@@ -1638,6 +1645,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: None,
+            policies: None,
         };
 
         certificate::create(vec![cert], dir.path()).unwrap();
@@ -1699,6 +1707,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: Some(vec![Usage::certsign]),
+            policies: None,
         };
         let leaf = Certificate {
             id: "chainleaf".to_string(),
@@ -1712,6 +1721,7 @@ mod generation {
             keylength: None,
             validto: None,
             usage: Some(vec![Usage::clientauth]),
+            policies: None,
         };
 
         // Invoke: one call, both certs.
@@ -1745,6 +1755,7 @@ mod generation {
             } else {
                 None
             },
+            policies: None,
         };
         let leaf = mk("t3leaf", Some("t3int"), false);
         let intermediate = mk("t3int", Some("t3ca"), true);
@@ -2755,6 +2766,7 @@ mod load_round_trip {
             keylength: Some(4096),
             validto: Some("2031-12-31".to_string()),
             usage: Some(vec![Usage::certsign, Usage::crlsign]),
+            policies: None,
         };
         let (_dir, path) = temp_yaml("cert.yaml");
         write_certificate_config(vec![original.clone()], &path).unwrap();
@@ -2804,6 +2816,7 @@ mod load_round_trip {
             keylength: None,
             validto: None,
             usage: None,
+            policies: None,
         };
         let (_dir, path) = temp_yaml("ed_cert.yaml");
         write_certificate_config(vec![original.clone()], &path).unwrap();
@@ -2843,6 +2856,7 @@ mod load_round_trip {
             keylength: None,
             validto: None,
             usage: Some(vec![Usage::certsign]),
+            policies: None,
         };
         let leaf = Certificate {
             id: "rt-leaf".to_string(),
@@ -2860,6 +2874,7 @@ mod load_round_trip {
             keylength: None,
             validto: None,
             usage: None,
+            policies: None,
         };
         let (_dir, path) = temp_yaml("chain.yaml");
         write_certificate_config(vec![ca, leaf], &path).unwrap();
@@ -2931,6 +2946,7 @@ mod load_round_trip {
             },
             validto: Some("2030-01-01".to_string()),
             ca: Some(true),
+            policies: None,
         };
         let (_dir, path) = temp_yaml("csr_sign.yaml");
         write_csr_config(

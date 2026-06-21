@@ -11,7 +11,7 @@
 //! ([`KEY_TYPE_OPTIONS`], [`HASH_ALG_OPTIONS`], [`USAGE_OPTIONS`],
 //! [`REASON_OPTIONS`]).
 
-use crate::config::{HashAlg, KeyType, Reason, Usage};
+use crate::config::{HashAlg, KeyType, Policies, Reason, Usage};
 
 /// The four top-level forms plus the menu, mirroring the CLI subcommands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +93,15 @@ pub const USAGE_OPTIONS: &[Usage] = &[
     Usage::contentcommitment,
 ];
 
+/// Option set for the certificate-policies multi-select. Reuses [`Policies`].
+pub const POLICY_OPTIONS: &[Policies] = &[
+    Policies::DomainValidated,
+    Policies::OrganizationValidated,
+    Policies::IndividualValidated,
+    Policies::ExtendedValidation,
+    Policies::AnyPolicy,
+];
+
 /// Option set for the CRL revocation-reason cycler. Reuses [`Reason`].
 pub const REASON_OPTIONS: &[Reason] = &[
     Reason::Unspecified,
@@ -153,6 +162,11 @@ pub struct CertForm {
     pub parent: String,
     /// Optional inline signer (used when `parent` is empty).
     pub signer: SignerState,
+    /// One toggle per [`POLICY_OPTIONS`] entry (certificate policies extension).
+    pub policies: Vec<bool>,
+    /// Highlighted option within the policies multi-select (moved with ←→; the
+    /// option under it is toggled with Space).
+    pub policies_cursor: usize,
     /// Currently focused field index within the form.
     pub field: usize,
 }
@@ -174,6 +188,8 @@ impl Default for CertForm {
             valid_to: String::new(),
             parent: String::new(),
             signer: SignerState::default(),
+            policies: vec![false; POLICY_OPTIONS.len()],
+            policies_cursor: 0,
             field: 0,
         }
     }
@@ -215,6 +231,11 @@ pub struct CsrForm {
     pub valid_to: String,
     /// `ca` toggle for sign mode.
     pub ca: bool,
+    /// One toggle per [`POLICY_OPTIONS`] entry (certificate policies, sign mode).
+    pub policies: Vec<bool>,
+    /// Highlighted option within the policies multi-select (moved with ←→; the
+    /// option under it is toggled with Space).
+    pub policies_cursor: usize,
     /// Currently focused field index.
     pub field: usize,
 }
@@ -237,6 +258,8 @@ impl Default for CsrForm {
             signer: SignerState::default(),
             valid_to: String::new(),
             ca: false,
+            policies: vec![false; POLICY_OPTIONS.len()],
+            policies_cursor: 0,
             field: 0,
         }
     }
@@ -610,12 +633,13 @@ impl App {
             // Field counts are intentionally generous bounds matching the
             // render order chosen by the forms module; clamping keeps the
             // selection in range even if a form grows.
-            // Cert: 14 fields (0..=13), including the new signer key pem at 13.
-            Screen::Cert => 14,
-            // Csr: 15 fields (0..=14). 0..=12 unchanged; 13 = signer cert pem,
-            // 14 = signer private-key pem (mirrors Cert's 12/13). These make
-            // sign-mode CSR signers reachable by Up/Down, typing and Ctrl+O.
-            Screen::Csr => 15,
+            // Cert: 15 fields (0..=14). 0..=13 unchanged (signer key pem at 13);
+            // 14 = the certificate-policies multi-select appended at the end.
+            Screen::Cert => 15,
+            // Csr: 16 fields (0..=15). 0..=12 unchanged; 13 = signer cert pem,
+            // 14 = signer private-key pem (mirrors Cert's 12/13); 15 = the
+            // certificate-policies multi-select (sign mode), appended at the end.
+            Screen::Csr => 16,
             // Crl: the 3 fixed text fields are `field` 0..=2. Revoked rows are
             // *not* counted here; they are addressed by `selected_row` and
             // reached by stepping past field 2 (see `move_down`/`move_up`).
@@ -1675,6 +1699,8 @@ fn cycle_cert(form: &mut CertForm, forward: bool) {
         6 => cycle_index(&mut form.usage_cursor, USAGE_OPTIONS.len(), forward),
         // key length (RSA only; ignored at conversion for other key types).
         9 => cycle_index(&mut form.key_length, RSA_KEY_LENGTH_OPTIONS.len(), forward),
+        // ←→ move the policies highlight; toggling is done with Space.
+        14 => cycle_index(&mut form.policies_cursor, POLICY_OPTIONS.len(), forward),
         _ => {}
     }
 }
@@ -1687,6 +1713,8 @@ fn cycle_csr(form: &mut CsrForm, forward: bool) {
         6 => cycle_index(&mut form.usage_cursor, USAGE_OPTIONS.len(), forward),
         // key length (RSA only).
         12 => cycle_index(&mut form.key_length, RSA_KEY_LENGTH_OPTIONS.len(), forward),
+        // ←→ move the policies highlight (sign mode); toggling is done with Space.
+        15 => cycle_index(&mut form.policies_cursor, POLICY_OPTIONS.len(), forward),
         _ => {}
     }
 }
@@ -1711,6 +1739,12 @@ fn toggle_cert(form: &mut CertForm) {
         }
         // CA toggle occupies field index 8.
         8 => form.ca = !form.ca,
+        // Policies multi-select occupies field index 14 (see usage at 6).
+        14 => {
+            if let Some(slot) = form.policies.get_mut(form.policies_cursor) {
+                *slot = !*slot;
+            }
+        }
         _ => {}
     }
 }
@@ -1727,6 +1761,12 @@ fn toggle_csr(form: &mut CsrForm) {
         7 => form.sign_mode = !form.sign_mode,
         // CA toggle (sign mode).
         11 => form.ca = !form.ca,
+        // Policies multi-select (sign mode) occupies field index 15.
+        15 => {
+            if let Some(slot) = form.policies.get_mut(form.policies_cursor) {
+                *slot = !*slot;
+            }
+        }
         _ => {}
     }
 }
@@ -2040,6 +2080,53 @@ mod tests {
         assert!(!app.csr().usage[0]);
     }
 
+    // --- certificate policies multi-select --------------------------------
+
+    #[test]
+    fn policies_left_right_moves_cursor_without_selecting() {
+        let mut app = cert_app();
+        app.cert_mut().field = 14; // policies multi-select
+        app.update(Message::Right);
+        app.update(Message::Right);
+        assert_eq!(app.cert().policies_cursor, 2);
+        assert!(
+            app.cert().policies.iter().all(|&b| !b),
+            "moving the cursor must not select anything"
+        );
+    }
+
+    #[test]
+    fn policies_cursor_wraps_backward_from_first() {
+        let mut app = cert_app();
+        app.cert_mut().field = 14;
+        app.update(Message::Left);
+        assert_eq!(app.cert().policies_cursor, POLICY_OPTIONS.len() - 1);
+    }
+
+    #[test]
+    fn policies_space_toggles_only_the_cursor_option() {
+        let mut app = cert_app();
+        app.cert_mut().field = 14;
+        app.update(Message::Right); // cursor -> 1
+        app.update(Message::Toggle);
+        assert!(app.cert().policies[1], "cursor option is selected");
+        assert!(!app.cert().policies[0], "earlier option is untouched");
+        app.update(Message::Toggle); // toggling again clears it
+        assert!(!app.cert().policies[1]);
+    }
+
+    #[test]
+    fn csr_policies_toggle_at_field_15() {
+        let mut app = App::new("./out".to_string());
+        app.screen = Screen::Csr;
+        app.focus = Focus::Form;
+        app.csr_mut().field = 15; // policies multi-select (sign mode)
+        app.update(Message::Right); // cursor -> 1
+        app.update(Message::Toggle);
+        assert!(app.csr().policies[1]);
+        assert!(!app.csr().policies[0]);
+    }
+
     #[test]
     fn add_and_delete_revoked_rows() {
         let mut app = App::new("./out".to_string());
@@ -2136,17 +2223,18 @@ mod tests {
     }
 
     #[test]
-    fn csr_down_reaches_field_14() {
+    fn csr_down_reaches_field_15() {
         let mut app = csr_app();
         app.csr_mut().field = 0;
-        // 14 Downs from field 0 reach field 14 (0..=14 => 15 fields).
-        for _ in 0..14 {
+        // 15 Downs from field 0 reach field 15 (0..=15 => 16 fields, the last
+        // being the certificate-policies multi-select).
+        for _ in 0..15 {
             app.update(Message::Down);
         }
-        assert_eq!(app.csr().field, 14, "active_field_count must allow 0..=14");
+        assert_eq!(app.csr().field, 15, "active_field_count must allow 0..=15");
         // Further Down is clamped at the last field.
         app.update(Message::Down);
-        assert_eq!(app.csr().field, 14);
+        assert_eq!(app.csr().field, 15);
     }
 
     // --- R3: CRL revoked-row navigation -----------------------------------
@@ -2493,9 +2581,9 @@ mod tests {
     }
 
     #[test]
-    fn cert_field_count_is_fourteen() {
+    fn cert_field_count_is_fifteen() {
         let app = cert_app();
-        assert_eq!(app.active_field_count(), 14);
+        assert_eq!(app.active_field_count(), 15);
     }
 
     // --- path-field tagging ----------------------------------------------
