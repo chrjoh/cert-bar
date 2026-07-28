@@ -127,6 +127,8 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
         validto: optional(&form.valid_to),
         usage: usage(&form.usage),
         policies: policies(&form.policies),
+        // temporary fix to modle the new pathlen, to be replaced with real value then implemented in tui
+        pathlen: None,
     })
 }
 
@@ -152,6 +154,8 @@ fn csr_from_form_inner(form: &CsrForm) -> Result<CsrData, ConvertError> {
         let to_sign = SigningRequest {
             csr_pem_file,
             signer,
+            // temporary fix to modle the new pathlen, to be replaced with real value then implemented in tui
+            pathlen: None,
             validto: optional(&form.valid_to),
             ca: Some(form.ca),
             policies: policies(&form.policies),

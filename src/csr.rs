@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-use crate::config::{Certificate, Csr, FromKeyType, KeyType, SigningRequest};
+use crate::config::{Certificate, ChainRef, Csr, FromKeyType, KeyType, SigningRequest};
 use cert_helper::certificate::{
     Certificate as CHCertificate, CertificatePolicy as CHCertificatePolicy, Csr as CGCsr,
     CsrBuilder, CsrOptions, HashAlg as CHHashAlg, KeyType as CHKeyType, Usage as CHUsage,
@@ -79,7 +79,41 @@ fn handle_sign<C: AsRef<Path>>(
         .as_ref()
         .map(|vec| vec.iter().cloned().map(CHCertificatePolicy::from).collect())
         .unwrap_or_default();
-    let option = option.certificate_policies(policies.clone());
+    let mut option = option.certificate_policies(policies.clone());
+    if let Some(pl) = &csr.pathlen {
+        if !csr.ca.unwrap_or(false) {
+            return Err("pathlen is only valid when signing a CA (set ca: true)".into());
+        }
+        // A CSR is signed against on-disk certs, so every ancestor must be a
+        // `file:`. `id:` has no meaning here (nothing is built in this run).
+        // Empty chain is allowed and is enforced only when the signer is a
+        // self-signed root.
+        let signer_der = signer.x509.to_der()?; // catch the signer listed in its own chain
+        let mut chain: Vec<CHCertificate> = Vec::new();
+        for entry in &pl.chain {
+            match entry {
+                ChainRef::File(path) => {
+                    let loaded = CHCertificate::load_cert(path)?;
+                    if loaded.x509.to_der()? == signer_der {
+                        return Err(format!(
+                            "pathlen.chain must list the CAs above the signer, not the \
+                             signer itself ('{path}')"
+                        )
+                        .into());
+                    }
+                    chain.push(loaded);
+                }
+                ChainRef::Id(id) => {
+                    return Err(format!(
+                        "pathlen.chain 'id: {id}' is not supported when signing a CSR; \
+                         use a 'file:' entry"
+                    )
+                    .into());
+                }
+            }
+        }
+        option = option.pathlen(pl.length, chain);
+    }
     let signed_cert = csr_to_sign.build_signed_certificate(&signer, option)?;
 
     let filename = Path::new(&csr.csr_pem_file)
@@ -270,6 +304,7 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
             validto: Some("2026-07-01".to_string()),
             policies: None,
             ca: Some(true),
+            pathlen: None,
         };
 
         // Signing must succeed; unwrap prints the Err on failure.

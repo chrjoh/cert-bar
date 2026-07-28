@@ -31,3 +31,6 @@ ecdsa = { version = "0.16", features = ["signing", "digest"] }
 hex = "0.4.3"
 ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
+
+[patch.crates-io]
+cert-helper = { path = "../cert-helper" }

@@ -1,0 +1,15 @@
+certificates:
+  - certificate:
+      id: intercdfromfile
+      signer:
+        cert_pem_file: ./certs/maincadoc_cert.pem # the immediate signer
+        private_key_pem_file: ./certs/maincadoc_pkey.pem
+      ca: true
+      pathlen:
+        length: 0
+        chain: # maincadoc's ancestors, on disk — omit if it is a root
+          - file: ./certs/rootca_cert.pem
+      pkix:
+        { commonname: www.bar-with-file.se, country: SE, organization: test }
+      keytype: P224
+      hashalg: SHA256

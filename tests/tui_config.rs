@@ -45,6 +45,7 @@ mod round_trip {
             id: "ca".to_string(),
             parent: Some("ca".to_string()),
             policies: None,
+            pathlen: None,
             signer: Some(Signer {
                 cert_pem_file: "s_cert.pem".to_string(),
                 private_key_pem_file: "s_key.pem".to_string(),
@@ -67,6 +68,7 @@ mod round_trip {
             policies: None,
             parent: None,
             signer: None,
+            pathlen: None,
             ca: None,
             pkix: Pkix {
                 commonname: "Leaf".to_string(),
@@ -133,6 +135,7 @@ mod round_trip {
             validto: None,
             policies: None,
             ca: None,
+            pathlen: None,
         };
 
         let (_dir, path) = temp_yaml("csrs.yaml");
@@ -321,6 +324,7 @@ revoked:
             hashalg: None,
             keylength: None,
             validto: None,
+            pathlen: None,
             usage: Some(vec![Usage::certsign]),
         };
         let intermediate = Certificate {
@@ -329,6 +333,7 @@ revoked:
             policies: None,
             signer: None,
             ca: Some(true),
+            pathlen: None,
             pkix: Pkix {
                 commonname: "Intermediate".to_string(),
                 country: "SE".to_string(),
@@ -358,6 +363,7 @@ revoked:
             keylength: Some(2048),
             validto: None,
             usage: None,
+            pathlen: None,
         };
 
         let (_dir, path) = temp_yaml("chain.yaml");
@@ -421,6 +427,7 @@ mod cms_error_propagation {
             hashalg: Some(HashAlg::SHA256),
             keylength: Some(2048),
             validto: None,
+            pathlen: None,
             usage: Some(vec![Usage::signature, Usage::encipherment]),
         };
         certificate::create(vec![cert], dir).unwrap();
@@ -444,6 +451,7 @@ mod cms_error_propagation {
             altnames: None,
             hashalg: Some(HashAlg::SHA256),
             keylength: None,
+            pathlen: None,
             validto: None,
             usage: Some(vec![Usage::signature, Usage::encipherment]),
         };
@@ -1294,6 +1302,7 @@ mod generation {
             id: id.to_string(),
             parent: Some(id.to_string()),
             signer: None,
+            pathlen: None,
             ca: Some(true),
             pkix: pkix(id),
             keytype: KeyType::P256,
@@ -1319,6 +1328,7 @@ mod generation {
             id: "tui-ca".to_string(),
             parent: Some("tui-ca".to_string()),
             signer: None,
+            pathlen: None,
             ca: Some(true),
             pkix: pkix("tui-ca"),
             keytype: KeyType::P256,
@@ -1347,6 +1357,7 @@ mod generation {
             id: "perm-ca".to_string(),
             parent: Some("perm-ca".to_string()),
             signer: None,
+            pathlen: None,
             ca: Some(true),
             pkix: pkix("perm-ca"),
             keytype: KeyType::P256,
@@ -1384,6 +1395,7 @@ mod generation {
             id: "rsa-ca".to_string(),
             parent: Some("rsa-ca".to_string()),
             signer: None,
+            pathlen: None,
             ca: Some(true),
             pkix: pkix("rsa-ca"),
             keytype: KeyType::RSA,
@@ -1473,6 +1485,7 @@ mod generation {
         let req = SigningRequest {
             csr_pem_file: csr_pem.to_string_lossy().into(),
             signer,
+            pathlen: None,
             validto: None,
             ca: Some(false),
             policies: None,
@@ -1515,6 +1528,7 @@ mod generation {
             id: id.to_string(),
             parent: Some(id.to_string()),
             signer: None,
+            pathlen: None,
             ca: Some(false),
             pkix: pkix(id),
             keytype: KeyType::RSA,
@@ -1606,6 +1620,7 @@ mod generation {
             signer: None,
             ca: Some(false),
             pkix: pkix("selfroot"),
+            pathlen: None,
             keytype: KeyType::P256,
             altnames: None,
             hashalg: Some(HashAlg::SHA256),
@@ -1638,6 +1653,7 @@ mod generation {
             parent: None,
             signer: None,
             ca: Some(false),
+            pathlen: None,
             pkix: pkix("edroot"),
             keytype: KeyType::Ed25519,
             altnames: None,
@@ -1700,6 +1716,7 @@ mod generation {
             parent: None,
             signer: None,
             ca: Some(true),
+            pathlen: None,
             pkix: pkix("chainca"),
             keytype: KeyType::Ed25519,
             altnames: None,
@@ -1714,6 +1731,7 @@ mod generation {
             parent: Some("chainca".to_string()),
             signer: None,
             ca: Some(false),
+            pathlen: None,
             pkix: pkix("chainleaf"),
             keytype: KeyType::Ed25519,
             altnames: None,
@@ -1746,6 +1764,7 @@ mod generation {
             ca: Some(ca),
             pkix: pkix(id),
             keytype: KeyType::Ed25519,
+            pathlen: None,
             altnames: None,
             hashalg: None,
             keylength: None,
@@ -2749,6 +2768,7 @@ mod load_round_trip {
         // Setup: a fully populated RSA cert written to YAML.
         let original = Certificate {
             id: "ca".to_string(),
+            pathlen: None,
             parent: Some("ca".to_string()),
             signer: Some(Signer {
                 cert_pem_file: "s_cert.pem".to_string(),
@@ -2802,6 +2822,7 @@ mod load_round_trip {
         // mapper then re-omits hashalg for Ed25519, so None survives.
         let original = Certificate {
             id: "ed-leaf".to_string(),
+            pathlen: None,
             parent: None,
             signer: None,
             ca: Some(false),
@@ -2842,6 +2863,7 @@ mod load_round_trip {
         // Cert configs load *every* entry; the loop must preserve order/ids.
         let ca = Certificate {
             id: "rt-ca".to_string(),
+            pathlen: None,
             parent: None,
             signer: None,
             ca: Some(true),
@@ -2861,6 +2883,7 @@ mod load_round_trip {
         let leaf = Certificate {
             id: "rt-leaf".to_string(),
             parent: Some("rt-ca".to_string()),
+            pathlen: None,
             signer: None,
             ca: Some(false),
             pkix: Pkix {
@@ -2945,6 +2968,7 @@ mod load_round_trip {
                 private_key_pem_file: "k.pem".to_string(),
             },
             validto: Some("2030-01-01".to_string()),
+            pathlen: None,
             ca: Some(true),
             policies: None,
         };

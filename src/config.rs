@@ -26,6 +26,76 @@ impl From<HashAlg> for CHHashAlg {
     }
 }
 
+/// One entry in a `pathlen` chain: an ancestor CA identified either by the id of
+/// a cert built in the same run, or by a path to a PEM cert on disk.
+///
+/// In YAML each entry is a single-key map — `- id: rootca` or
+/// `- file: ./ca/root_cert.pem`. serde_yaml 0.9 would otherwise render a plain
+/// externally-tagged enum with `!id` / `!file` tags, so we (de)serialize through
+/// [`ChainRefRepr`] to keep the map form.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "ChainRefRepr", into = "ChainRefRepr")]
+pub enum ChainRef {
+    /// A cert id built in the same run (resolved from the `created` map).
+    Id(String),
+    /// A path to a PEM-encoded certificate on disk (loaded via `load_cert`).
+    File(String),
+}
+
+/// Serde surrogate for [`ChainRef`]: a map where exactly one of `id` / `file` is
+/// present. Keeps the `- id:` / `- file:` YAML form under serde_yaml 0.9.
+#[derive(Debug, Deserialize, Serialize)]
+struct ChainRefRepr {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+}
+
+impl TryFrom<ChainRefRepr> for ChainRef {
+    type Error = String;
+
+    fn try_from(r: ChainRefRepr) -> Result<Self, Self::Error> {
+        match (r.id, r.file) {
+            (Some(id), None) => Ok(ChainRef::Id(id)),
+            (None, Some(file)) => Ok(ChainRef::File(file)),
+            (Some(_), Some(_)) => {
+                Err("pathlen.chain entry has both 'id' and 'file'; use exactly one".into())
+            }
+            (None, None) => Err("pathlen.chain entry needs an 'id' or a 'file' key".into()),
+        }
+    }
+}
+
+impl From<ChainRef> for ChainRefRepr {
+    fn from(c: ChainRef) -> Self {
+        match c {
+            ChainRef::Id(id) => ChainRefRepr {
+                id: Some(id),
+                file: None,
+            },
+            ChainRef::File(file) => ChainRefRepr {
+                id: None,
+                file: Some(file),
+            },
+        }
+    }
+}
+
+/// Path length constraint for a CA certificate.
+///
+/// `length` is the BasicConstraints pathLen (max intermediate CAs below this
+/// cert). `chain` lists the CA certs **above the immediate signer** (its
+/// ancestors up to the root) used to enforce the budget — never the signer
+/// itself. Omit `chain` on an in-run cert to auto-derive it from `parent`. Each
+/// entry is an `id:` (in-run cert) or a `file:` (PEM on disk).
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct PathLen {
+    pub length: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<ChainRef>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub enum Policies {
     DomainValidated,
@@ -176,6 +246,8 @@ pub struct Certificate {
     pub usage: Option<Vec<Usage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policies: Option<Vec<Policies>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pathlen: Option<PathLen>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -216,6 +288,8 @@ pub struct SigningRequest {
     pub ca: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policies: Option<Vec<Policies>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pathlen: Option<PathLen>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -538,6 +612,8 @@ certificates:
       parent: null
       signer: null
       ca: true
+      pathlen:
+        length: 0
       policies: [AnyPolicy]
       pkix:
         commonname: "Example CN"
@@ -571,6 +647,84 @@ certificates:
         assert_eq!(cert.keylength, Some(2048));
         assert_eq!(cert.usage.as_ref().unwrap().len(), 2);
         assert_eq!(cert.policies.as_ref().unwrap().len(), 1);
+        assert_eq!(cert.pathlen.as_ref().unwrap().length, 0);
+    }
+
+    #[test]
+    fn test_read_certificate_config_invalid_chain_yaml() {
+        let yaml_content = r#"
+certificates:
+  - certificate:
+      id: "cert1"
+      parent: null
+      signer: null
+      ca: true
+      pathlen:
+        length: 0
+        chain:
+          - id:
+      policies: [AnyPolicy]
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      validto: "2030-01-01"
+      usage: [serverauth, clientauth]
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let err = read_certificate_config(temp_file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("needs an 'id' or a 'file'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_certificate_config_chain_invalid_multiple_entries_yaml() {
+        let yaml_content = r#"
+certificates:
+  - certificate:
+      id: "cert1"
+      parent: null
+      signer: null
+      ca: true
+      pathlen:
+        length: 0
+        chain:
+          - id: mainca
+            file: filename
+      policies: [AnyPolicy]
+      pkix:
+        commonname: "Example CN"
+        country: "SE"
+        organization: "Example Org"
+      keytype: RSA
+      altnames:
+        - example.com,
+        - www.example.com
+      hashalg: SHA256
+      keylength: 2048
+      validto: "2030-01-01"
+      usage: [serverauth, clientauth]
+"#;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write!(temp_file, "{}", yaml_content).expect("Failed to write to temp file");
+
+        let err = read_certificate_config(temp_file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("has both 'id' and 'file'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -643,6 +797,7 @@ signing_requests:
                 validto: Some("2030-01-01".to_string()),
                 ca: Some(true),
                 policies: Some(vec![Policies::AnyPolicy]),
+                pathlen: None,
                 signer: Signer {
                     cert_pem_file: "signer_cert.pem".to_string(),
                     private_key_pem_file: "signer_pkey.pem".to_string()
@@ -737,6 +892,10 @@ cmss:
             validto: Some("2030-01-01".to_string()),
             usage: Some(vec![Usage::serverauth, Usage::clientauth]),
             policies: Some(vec![Policies::AnyPolicy]),
+            pathlen: Some(PathLen {
+                length: 0,
+                chain: vec![],
+            }),
         };
 
         let temp_file = NamedTempFile::new().expect("Failed to create temp file");
@@ -752,6 +911,49 @@ cmss:
         assert_eq!(certs[0].keylength, Some(2048));
         assert_eq!(certs[0].usage.as_ref().unwrap().len(), 2);
         assert_eq!(certs[0].policies.as_ref().unwrap().len(), 1);
+        assert_eq!(certs[0].pathlen.as_ref().unwrap().length, 0);
+    }
+
+    #[test]
+    fn test_write_certificate_config_round_trips_with_mixed_chain() {
+        let chain: Vec<ChainRef> = vec![
+            ChainRef::File("some_file.pem".to_string()),
+            ChainRef::Id("cert_id".to_string()),
+        ];
+        let cert = Certificate {
+            id: "cert1".to_string(),
+            parent: None,
+            signer: None,
+            ca: Some(true),
+            pkix: Pkix {
+                commonname: "Example CN".to_string(),
+                country: "SE".to_string(),
+                organization: "Example Org".to_string(),
+            },
+            keytype: KeyType::RSA,
+            altnames: Some(vec!["example.com".to_string()]),
+            hashalg: Some(HashAlg::SHA256),
+            keylength: Some(2048),
+            validto: Some("2030-01-01".to_string()),
+            usage: Some(vec![Usage::serverauth, Usage::clientauth]),
+            policies: Some(vec![Policies::AnyPolicy]),
+            pathlen: Some(PathLen { length: 0, chain }),
+        };
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        write_certificate_config(vec![cert], temp_file.path()).unwrap();
+
+        let certs = read_certificate_config(temp_file.path()).unwrap();
+
+        assert_eq!(certs[0].pathlen.as_ref().unwrap().length, 0);
+        let chain_from_file = &certs[0].pathlen.as_ref().unwrap().chain;
+        assert_eq!(
+            chain_from_file,
+            &vec![
+                ChainRef::File("some_file.pem".to_string()),
+                ChainRef::Id("cert_id".to_string()),
+            ]
+        )
     }
 
     #[test]
@@ -765,6 +967,7 @@ cmss:
             signer: None,
             ca: Some(false),
             policies: None,
+            pathlen: None,
             pkix: Pkix {
                 commonname: "Ed CN".to_string(),
                 country: "SE".to_string(),
@@ -825,6 +1028,7 @@ cmss:
             validto: Some("2030-01-01".to_string()),
             ca: Some(true),
             policies: None,
+            pathlen: None,
         };
 
         let temp_file = NamedTempFile::new().expect("Failed to create temp file");

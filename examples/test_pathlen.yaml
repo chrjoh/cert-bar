@@ -1,0 +1,37 @@
+certificates:
+  - certificate:
+      id: rootca
+      parent: rootca # self-signed root
+      ca: true
+      pathlen:
+        length: 2
+      pkix: { commonname: Root CA, country: SE, organization: test }
+      keytype: P256
+      hashalg: SHA256
+  - certificate:
+      id: maincadoc
+      parent: rootca
+      ca: true
+      pathlen:
+        length: 1 # chain omitted ⇒ auto-derived = [rootca]
+      pkix: { commonname: Main CA, country: SE, organization: test }
+      keytype: P256
+      hashalg: SHA256
+  - certificate:
+      id: intercadoc
+      parent: maincadoc # signer = maincadoc
+      ca: true
+      pathlen:
+        length: 0
+        chain: # ancestors of maincadoc — NOT maincadoc itself
+          - id: rootca
+      pkix: { commonname: Inter CA, country: SE, organization: test }
+      keytype: P256
+      hashalg: SHA256
+  - certificate:
+      id: leaf
+      parent: intercadoc
+      ca: false
+      pkix: { commonname: www.example.se, country: SE, organization: test }
+      keytype: P256
+      hashalg: SHA256
