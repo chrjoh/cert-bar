@@ -269,28 +269,11 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let csr_path = temp_dir.path().join("test.csr");
 
-        let csr_pem = b"-----BEGIN CERTIFICATE REQUEST-----
-MIIC4zCCAcsCAQAwODETMBEGA1UEAwwKRXhhbXBsZSBDTjELMAkGA1UEBhMCU0Ux
-FDASBgNVBAoMC0V4YW1wbGUgT3JnMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
-CgKCAQEA1IqP3IddAUybVGEhlu6kSVUW30i2NfAEisIcbVdQ9U45IJ/BmzugDlTx
-aQ0Ms0g+Hb2yQhkqP0jXqQMUaEwSSgY2oZ0179YYRkYwmaso4N6flYA3+IarczrZ
-1QrP/l/DYy7nqlvyDBd7nyiWYs8ZIRi6rLP0SXIat//TrW+rxNyh6XIePNL0RmXO
-d4obpS5Gfo0BkWv6Y840SvvCMltfKVxKKu2HE07L0ODlA5OuxZeY8odNv6YzhXNq
-qz6XWke0Lsfg7Cae+UejH+yUnsAtz1DV8ylEUbUSr2peF6OzAVySv1WtNT3qAN2S
-skBADUiJiD0OGarntLy6uYuFt8g3MQIDAQABoGYwZAYJKoZIhvcNAQkOMVcwVTAd
-BgNVHSUEFjAUBggrBgEFBQcDAgYIKwYBBQUHAwEwNAYDVR0RBC0wK4IPd3d3LmV4
-YW1wbGUuY29tggpFeGFtcGxlIENOggxleGFtcGxlLmNvbSwwDQYJKoZIhvcNAQEL
-BQADggEBAEjROaK6aPFm4mhI1ca/RwQRxpC7Dx9hw6lwM7/vE9M8U8jkVwgs9DrA
-HpuO24C2+mjdo7M2D6tfALQ4VXVPUBNxanTdSwJ3oXJ6wiueEIvQv+HojHtn2s+F
-cA3HhjVX2s4z6NjufCLR43wCpmS9uBUmx5qmzepPknUGe9h/Mw37oTAhp9EewXQb
-EP5+MhsSvnji2hwDtsmMfq0Zy/esBbbyBIE+WSbz6fCZNx+E82/qmZDCQY68XjPq
-dKl92Fp7/SPP/HC+ffQLLTk8sPWJ1RNGB6xiq8pjOMR09epNwqrndJvR9TFgdCM8
-QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
------END CERTIFICATE REQUEST-----";
+        let csr_pem = default_csr();
 
         std::fs::write(&csr_path, csr_pem).unwrap();
 
-        let cert = dummy_certificate();
+        let cert = dummy_certificate(1);
         let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
 
         let signer = Signer {
@@ -301,7 +284,7 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
         let request = SigningRequest {
             csr_pem_file: csr_pem_file.clone(),
             signer,
-            validto: Some("2026-07-01".to_string()),
+            validto: Some("2037-07-01".to_string()),
             policies: None,
             ca: Some(true),
             pathlen: None,
@@ -319,10 +302,216 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
         assert!(signed_cert_path.exists());
     }
 
-    fn dummy_certificate() -> CHCertificate {
+    #[test]
+    fn test_handle_sign_with_dummy_cert_and_invalid_pathlen() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
+
+        let csr_pem = default_csr();
+
+        std::fs::write(&csr_path, csr_pem).unwrap();
+
+        let cert = dummy_certificate(1);
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+
+        let signer = Signer {
+            cert_pem_file: cert_file,
+            private_key_pem_file: key_file,
+        };
+        let csr_pem_file = csr_path.to_str().unwrap().to_string();
+        let request = SigningRequest {
+            csr_pem_file: csr_pem_file.clone(),
+            signer,
+            validto: Some("2037-07-01".to_string()),
+            policies: None,
+            ca: Some(true),
+            pathlen: Some(PathLen {
+                length: 1,
+                chain: vec![],
+            }),
+        };
+
+        // Signing must fail
+        let err = handle_sign(request, temp_dir.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exceeds what the signer's chain permits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_handle_sign_with_dummy_cert_and_pathlen() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
+
+        let csr_pem = default_csr();
+
+        std::fs::write(&csr_path, csr_pem).unwrap();
+
+        let cert = dummy_certificate(2);
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+
+        let signer = Signer {
+            cert_pem_file: cert_file,
+            private_key_pem_file: key_file,
+        };
+        let csr_pem_file = csr_path.to_str().unwrap().to_string();
+        let request = SigningRequest {
+            csr_pem_file: csr_pem_file.clone(),
+            signer,
+            validto: Some("2037-07-01".to_string()),
+            policies: None,
+            ca: Some(true),
+            pathlen: Some(PathLen {
+                length: 1,
+                chain: vec![],
+            }),
+        };
+
+        // Signing must succeed; unwrap prints the Err on failure.
+        handle_sign(request, temp_dir.path()).unwrap();
+
+        let filename = Path::new(&csr_pem_file)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+
+        let signed_cert_path = temp_dir.path().join(format!("{filename}_cert.pem"));
+        assert!(signed_cert_path.exists());
+    }
+
+    #[test]
+    fn test_handle_sign_non_ca_with_dummy_cert_and_pathlen() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
+
+        let csr_pem = default_csr();
+
+        std::fs::write(&csr_path, csr_pem).unwrap();
+
+        let cert = dummy_certificate(2);
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+
+        let signer = Signer {
+            cert_pem_file: cert_file,
+            private_key_pem_file: key_file,
+        };
+        let csr_pem_file = csr_path.to_str().unwrap().to_string();
+        let request = SigningRequest {
+            csr_pem_file: csr_pem_file.clone(),
+            signer,
+            validto: Some("2037-07-01".to_string()),
+            policies: None,
+            ca: Some(false),
+            pathlen: Some(PathLen {
+                length: 1,
+                chain: vec![],
+            }),
+        };
+
+        // Signing must fail
+        let err = handle_sign(request, temp_dir.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("pathlen is only valid when signing a CA"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_handle_sign_ca_with_dummy_cert_and_signer_in_chain_and_pathlen() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
+
+        let csr_pem = default_csr();
+
+        std::fs::write(&csr_path, csr_pem).unwrap();
+
+        let cert = dummy_certificate(2);
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+        let signer = Signer {
+            cert_pem_file: cert_file.clone(),
+            private_key_pem_file: key_file,
+        };
+        let csr_pem_file = csr_path.to_str().unwrap().to_string();
+        let request = SigningRequest {
+            csr_pem_file: csr_pem_file.clone(),
+            signer,
+            validto: Some("2037-07-01".to_string()),
+            policies: None,
+            ca: Some(true),
+            pathlen: Some(PathLen {
+                length: 1,
+                chain: vec![ChainRef::File(cert_file)],
+            }),
+        };
+
+        // Signing must fail
+        let err = handle_sign(request, temp_dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("not the signer itself"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_handle_sign_rejects_id_chain_entry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let csr_path = temp_dir.path().join("test.csr");
+        std::fs::write(&csr_path, default_csr()).unwrap();
+
+        let cert = dummy_certificate(2);
+        let (cert_file, key_file) = write_dummy_cert_and_key(&cert, temp_dir.path());
+        let signer = Signer {
+            cert_pem_file: cert_file,
+            private_key_pem_file: key_file,
+        };
+
+        let request = SigningRequest {
+            csr_pem_file: csr_path.to_str().unwrap().to_string(),
+            signer,
+            validto: Some("2037-07-01".to_string()),
+            policies: None,
+            ca: Some(true),
+            pathlen: Some(PathLen {
+                length: 0,
+                chain: vec![ChainRef::Id("rootca".to_string())],
+            }),
+        };
+
+        let err = handle_sign(request, temp_dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("not supported when signing a CSR"),
+            "unexpected error: {err}"
+        );
+    }
+    fn default_csr() -> &'static [u8] {
+        b"-----BEGIN CERTIFICATE REQUEST-----
+MIIC4zCCAcsCAQAwODETMBEGA1UEAwwKRXhhbXBsZSBDTjELMAkGA1UEBhMCU0Ux
+FDASBgNVBAoMC0V4YW1wbGUgT3JnMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
+CgKCAQEA1IqP3IddAUybVGEhlu6kSVUW30i2NfAEisIcbVdQ9U45IJ/BmzugDlTx
+aQ0Ms0g+Hb2yQhkqP0jXqQMUaEwSSgY2oZ0179YYRkYwmaso4N6flYA3+IarczrZ
+1QrP/l/DYy7nqlvyDBd7nyiWYs8ZIRi6rLP0SXIat//TrW+rxNyh6XIePNL0RmXO
+d4obpS5Gfo0BkWv6Y840SvvCMltfKVxKKu2HE07L0ODlA5OuxZeY8odNv6YzhXNq
+qz6XWke0Lsfg7Cae+UejH+yUnsAtz1DV8ylEUbUSr2peF6OzAVySv1WtNT3qAN2S
+skBADUiJiD0OGarntLy6uYuFt8g3MQIDAQABoGYwZAYJKoZIhvcNAQkOMVcwVTAd
+BgNVHSUEFjAUBggrBgEFBQcDAgYIKwYBBQUHAwEwNAYDVR0RBC0wK4IPd3d3LmV4
+YW1wbGUuY29tggpFeGFtcGxlIENOggxleGFtcGxlLmNvbSwwDQYJKoZIhvcNAQEL
+BQADggEBAEjROaK6aPFm4mhI1ca/RwQRxpC7Dx9hw6lwM7/vE9M8U8jkVwgs9DrA
+HpuO24C2+mjdo7M2D6tfALQ4VXVPUBNxanTdSwJ3oXJ6wiueEIvQv+HojHtn2s+F
+cA3HhjVX2s4z6NjufCLR43wCpmS9uBUmx5qmzepPknUGe9h/Mw37oTAhp9EewXQb
+EP5+MhsSvnji2hwDtsmMfq0Zy/esBbbyBIE+WSbz6fCZNx+E82/qmZDCQY68XjPq
+dKl92Fp7/SPP/HC+ffQLLTk8sPWJ1RNGB6xiq8pjOMR09epNwqrndJvR9TFgdCM8
+QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
+-----END CERTIFICATE REQUEST-----"
+    }
+
+    fn dummy_certificate(pathlen: u32) -> CHCertificate {
         CertBuilder::new()
             .common_name("My Test Ca")
             .is_ca(true)
+            .pathlen(pathlen)
             .build_and_self_sign()
             .unwrap()
     }

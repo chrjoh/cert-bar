@@ -305,7 +305,7 @@ dependencies = [
  "ecdsa",
  "hex",
  "mockall",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
  "p256",
  "p384",
@@ -322,12 +322,14 @@ dependencies = [
 
 [[package]]
 name = "cert-helper"
-version = "0.4.8"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef0efd7c70c799fb65ed0afb38f1c0f84b897461fe7ef74071366ad16fa9234f"
 dependencies = [
  "bit-vec 0.8.0",
  "chrono",
  "foreign-types",
- "num-bigint",
+ "num-bigint 0.5.1",
  "openssl",
  "openssl-sys",
  "x509-parser",
@@ -669,7 +671,7 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "rusticata-macros",
 ]
@@ -1437,6 +1439,16 @@ name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
