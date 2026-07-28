@@ -91,6 +91,8 @@ The bottom help line always shows the current bindings. Where a shortcut applies
 | `g` | Generate output now (opens a confirm dialog) | a form screen, non-text field |
 | `s` | Save the form as a replayable YAML config | a form screen, non-text field |
 | `a` / `d` | Add / delete a row (certificate entry, or CRL revoked row) | Entries pane / CRL screen |
+| `a` / `d` on the `pathlen` row | Add / delete a `pathlen` chain entry (`a` focuses the new row for typing) | Cert/CSR form, `pathlen` toggle field |
+| `←` / `→` on a chain row | Switch the chain entry between `id` and `file` (`Ctrl+O` opens the file browser on `file` rows) | inside the chain table |
 | `q` | Quit | non-text field |
 | `Ctrl+C` | Quit | anywhere |
 
@@ -198,6 +200,8 @@ The options for each keywords is(\* denote required values)
 | signer          | if points to signer cert and private key file key                                                                    | see above for example                        |
 | usage           | Key usage to ad to the certificates, see list below for options                                                      | list of strings                              |
 | policies | optional certificate policies to add | list of AnyPolicy, DomainValidation, OrganizationValidated, IndividualValidated, ExtendedValidation|
+| pathlen | optional path length constraint for a CA certificate — `{ length, chain }`; `chain` lists the CAs **above** the immediate signer (`- id:` for a cert built in the same run, `- file:` for a PEM on disk), omit it to auto-derive from `parent` | map: see [Path length constraints](#path-length-constraints) |
+
 ### Key usage
 
 If empty, if CA is true keys to sign certificates and crl lista are added, otherwise client and
@@ -212,6 +216,38 @@ server authentications are added.
 | serverauth        | allowed ot be used for server authenthication              |
 | signature         | allowed to perfom digital signature (For auth)             |
 | contentcommitment | allowed to perfom document signature (prev non repudation) |
+
+### Path length constraints
+
+`pathlen` requires `ca: true` — pathLen is a BasicConstraints field that only
+makes sense on a certificate that signs other certificates. The shape is:
+
+```yaml
+certificates:
+  - certificate:
+      id: interca
+      parent: mainca
+      ca: true
+      pathlen:
+        length: 0 # max number of intermediate CAs below this cert
+        chain: # ancestors of the immediate signer — never the signer itself
+          - id: rootca # a CA built in the same run
+          # - file: ./certs/rootca_cert.pem   (a PEM on disk)
+```
+
+- `length` is the BasicConstraints pathLen: a non-negative integer giving the
+  maximum number of intermediate CAs allowed below this certificate.
+- `chain` lists the CA certificates **above** the immediate signer (its
+  ancestors up to the root), used to enforce the length budget. Each entry is
+  `- id:` (a cert built in the same run) or `- file:` (a PEM on disk). The
+  chain must never list the signer itself. Omit `chain` to auto-derive it from
+  `parent`.
+- `signing_requests` entries accept the same `pathlen` block (with `- file:`
+  chain entries, since the signer comes from disk).
+
+See `examples/test_pathlen.yaml` (a root → main → intermediate chain using
+`- id:` entries) and `examples/test_pathlen_from_file.yaml` (a file-based
+signer with a `- file:` chain entry).
 
 ## Certificate Signing Requests (CSR)
 

@@ -17,12 +17,13 @@ use num_bigint::BigUint;
 use num_traits::Num;
 
 use crate::config::{
-    CertInfo, Certificate, Cms, Crl, Csr, CsrData, HashAlg, KeyType, Pkix, Policies, Reason,
-    RevokedCert, Signer, SigningRequest, Usage,
+    CertInfo, Certificate, ChainRef, Cms, Crl, Csr, CsrData, HashAlg, KeyType, PathLen, Pkix,
+    Policies, Reason, RevokedCert, Signer, SigningRequest, Usage,
 };
 use crate::tui::app::{
-    CertForm, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
-    REASON_OPTIONS, RSA_KEY_LENGTH_OPTIONS, RevokedRow, SignerState, USAGE_OPTIONS,
+    CHAIN_KIND_OPTIONS, CertForm, ChainRow, CmsForm, CrlForm, CsrForm, HASH_ALG_OPTIONS,
+    KEY_TYPE_OPTIONS, POLICY_OPTIONS, REASON_OPTIONS, RSA_KEY_LENGTH_OPTIONS, RevokedRow,
+    SignerState, USAGE_OPTIONS,
 };
 
 /// Typed conversion/validation error, mapped to a `String` at the public
@@ -47,6 +48,14 @@ enum ConvertError {
     /// A CMS entry had neither a recipient (encrypt) nor a signer (sign), so it
     /// would produce no output.
     CmsNoOutput,
+    /// A pathlen length buffer did not parse as a non-negative integer (`u32`).
+    InvalidPathLen(String),
+    /// A pathlen chain row (1-based) had a blank value.
+    EmptyChainEntry(usize),
+    /// `pathlen` was enabled while `ca` was off. `pathLen` is a BasicConstraints
+    /// field that only makes sense on a CA certificate; the generation pipeline
+    /// rejects it on a leaf, so the form boundary does too.
+    PathLenNotCa,
 }
 
 impl fmt::Display for ConvertError {
@@ -72,6 +81,18 @@ impl fmt::Display for ConvertError {
                 f,
                 "a CMS entry needs at least a recipient (encrypt) or a signer (sign)"
             ),
+            Self::InvalidPathLen(value) => {
+                write!(
+                    f,
+                    "pathlen length \"{value}\" must be a non-negative integer"
+                )
+            }
+            Self::EmptyChainEntry(row) => {
+                write!(f, "pathlen chain entry {row} has no value")
+            }
+            Self::PathLenNotCa => {
+                write!(f, "pathlen is only valid on a CA certificate (enable CA)")
+            }
         }
     }
 }
@@ -92,6 +113,8 @@ impl From<ConvertError> for String {
 /// Returns a user-readable message when `id` or the common name is empty, when a
 /// signer is half-specified, or when an enum selection index is out of range.
 /// (RSA key length is chosen from a fixed selector, so it can never be invalid.)
+/// When pathlen is enabled: the certificate must be a CA, the length must be a
+/// non-empty non-negative integer, and every chain row must have a value.
 pub fn cert_from_form(form: &CertForm) -> Result<Certificate, String> {
     Ok(cert_from_form_inner(form)?)
 }
@@ -127,8 +150,12 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
         validto: optional(&form.valid_to),
         usage: usage(&form.usage),
         policies: policies(&form.policies),
-        // temporary fix to modle the new pathlen, to be replaced with real value then implemented in tui
-        pathlen: None,
+        pathlen: path_len(
+            form.pathlen_enabled,
+            form.ca,
+            &form.pathlen_length,
+            &form.chain,
+        )?,
     })
 }
 
@@ -143,6 +170,8 @@ fn cert_from_form_inner(form: &CertForm) -> Result<Certificate, ConvertError> {
 /// Returns a user-readable message when required fields for the active mode are
 /// missing, when a signer is half-specified, or when an enum selection index is
 /// out of range. (RSA key length is a fixed selector and cannot be invalid.)
+/// When pathlen is enabled in sign mode: `ca` must be on, the length must be a
+/// non-empty non-negative integer, and every chain row must have a value.
 pub fn csr_from_form(form: &CsrForm) -> Result<CsrData, String> {
     Ok(csr_from_form_inner(form)?)
 }
@@ -154,8 +183,12 @@ fn csr_from_form_inner(form: &CsrForm) -> Result<CsrData, ConvertError> {
         let to_sign = SigningRequest {
             csr_pem_file,
             signer,
-            // temporary fix to modle the new pathlen, to be replaced with real value then implemented in tui
-            pathlen: None,
+            pathlen: path_len(
+                form.pathlen_enabled,
+                form.ca,
+                &form.pathlen_length,
+                &form.chain,
+            )?,
             validto: optional(&form.valid_to),
             ca: Some(form.ca),
             policies: policies(&form.policies),
@@ -274,10 +307,12 @@ fn cms_from_form_inner(form: &CmsForm) -> Result<Cms, ConvertError> {
 /// fields become empty buffers. The conversion is lossless for any config the
 /// TUI itself produced (modulo the documented index-0 fallbacks).
 ///
-/// UI cursor state (`field`, `usage_cursor`) is reset to its default `0`; it is
-/// not part of the config and is therefore not preserved.
+/// UI cursor state (`field`, `usage_cursor`, `chain_cursor`, `chain_focus`) is
+/// reset to its default; it is not part of the config and is therefore not
+/// preserved.
 #[must_use]
 pub fn cert_to_form(cert: &Certificate) -> CertForm {
+    let (pathlen_enabled, pathlen_length) = path_len_fields(&cert.pathlen);
     CertForm {
         id: cert.id.clone(),
         common_name: cert.pkix.commonname.clone(),
@@ -298,6 +333,11 @@ pub fn cert_to_form(cert: &Certificate) -> CertForm {
         signer: signer_state(&cert.signer),
         policies: policy_flags(&cert.policies),
         policies_cursor: 0,
+        pathlen_enabled,
+        pathlen_length,
+        chain: chain_rows(&cert.pathlen),
+        chain_cursor: 0,
+        chain_focus: false,
         field: 0,
     }
 }
@@ -332,6 +372,7 @@ pub fn csr_to_form(csr: &Csr) -> CsrForm {
 /// their defaults.
 #[must_use]
 pub fn signing_request_to_form(req: &SigningRequest) -> CsrForm {
+    let (pathlen_enabled, pathlen_length) = path_len_fields(&req.pathlen);
     CsrForm {
         sign_mode: true,
         csr_pem_file: req.csr_pem_file.clone(),
@@ -339,6 +380,9 @@ pub fn signing_request_to_form(req: &SigningRequest) -> CsrForm {
         valid_to: opt_buffer(&req.validto),
         ca: req.ca.unwrap_or(false),
         policies: policy_flags(&req.policies),
+        pathlen_enabled,
+        pathlen_length,
+        chain: chain_rows(&req.pathlen),
         ..CsrForm::default()
     }
 }
@@ -442,6 +486,41 @@ fn policy_flags(policies: &Option<Vec<Policies>>) -> Vec<bool> {
         }
     }
     flags
+}
+
+/// Splits an optional config [`PathLen`] into the form's enabled flag and
+/// length buffer. `None` -> (`false`, empty).
+fn path_len_fields(pathlen: &Option<PathLen>) -> (bool, String) {
+    match pathlen {
+        Some(pl) => (true, pl.length.to_string()),
+        None => (false, String::new()),
+    }
+}
+
+/// Maps an optional config [`PathLen`]'s chain back to form rows
+/// ([`ChainRef::Id`] -> kind 0, [`ChainRef::File`] -> kind 1). `None` -> no
+/// rows (the forward [`path_len`] never runs on a disabled group, so this
+/// round-trips).
+fn chain_rows(pathlen: &Option<PathLen>) -> Vec<ChainRow> {
+    let Some(pl) = pathlen else {
+        return Vec::new();
+    };
+    pl.chain
+        .iter()
+        .map(|entry| {
+            let (label, value) = match entry {
+                ChainRef::Id(id) => ("id", id),
+                ChainRef::File(file) => ("file", file),
+            };
+            ChainRow {
+                kind: CHAIN_KIND_OPTIONS
+                    .iter()
+                    .position(|k| *k == label)
+                    .unwrap_or(0), // both labels are in the slice; 0 is unreachable
+                value: value.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Joins an optional alt-names list into the comma-separated buffer the forward
@@ -594,6 +673,53 @@ fn policies(flags: &[bool]) -> Option<Vec<Policies>> {
     } else {
         Some(selected)
     }
+}
+
+/// Maps the pathlen form state to the config [`PathLen`]. Returns `None` when
+/// the group is disabled, so `pathlen` is omitted from the saved config.
+///
+/// `ca` gates the whole group: `pathLen` is a BasicConstraints field, and both
+/// `certificate.rs` and `csr.rs` reject it on a leaf at generation time — so
+/// it is rejected here, at the form boundary, rather than written into a
+/// config that cannot generate.
+fn path_len(
+    enabled: bool,
+    ca: bool,
+    length: &str,
+    rows: &[ChainRow],
+) -> Result<Option<PathLen>, ConvertError> {
+    if !enabled {
+        return Ok(None);
+    }
+    if !ca {
+        return Err(ConvertError::PathLenNotCa);
+    }
+    let trimmed = length.trim();
+    if trimmed.is_empty() {
+        return Err(ConvertError::Required("pathlen length"));
+    }
+    let length = trimmed
+        .parse::<u32>()
+        .map_err(|_| ConvertError::InvalidPathLen(trimmed.to_string()))?;
+
+    let mut chain = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let value = row.value.trim();
+        if value.is_empty() {
+            // 1-based so the message matches what the chain table shows.
+            return Err(ConvertError::EmptyChainEntry(i + 1));
+        }
+        // Resolve the kind through the options slice (like `key_type_at`)
+        // rather than hard-coding the indices a second time.
+        let entry = match CHAIN_KIND_OPTIONS.get(row.kind).copied() {
+            Some("id") => ChainRef::Id(value.to_string()),
+            Some("file") => ChainRef::File(value.to_string()),
+            _ => return Err(ConvertError::BadIndex("chain kind")),
+        };
+        chain.push(entry);
+    }
+
+    Ok(Some(PathLen { length, chain }))
 }
 
 /// Resolves a key-type selection index into its config [`KeyType`].
@@ -845,6 +971,126 @@ mod tests {
             let signer = cert.signer.unwrap();
             assert_eq!(signer.cert_pem_file, "c.pem");
             assert_eq!(signer.private_key_pem_file, "k.pem");
+        }
+    }
+
+    mod path_len {
+        use super::*;
+
+        /// A CA cert form with the pathlen group enabled and a length of 2.
+        fn pathlen_cert() -> CertForm {
+            let mut form = filled_cert();
+            form.ca = true;
+            form.pathlen_enabled = true;
+            form.pathlen_length = "2".to_string();
+            form
+        }
+
+        #[test]
+        fn disabled_group_maps_to_none() {
+            let cert = cert_from_form(&filled_cert()).unwrap();
+            assert!(cert.pathlen.is_none());
+        }
+
+        #[test]
+        fn enabled_group_with_no_chain_maps_length_only() {
+            let cert = cert_from_form(&pathlen_cert()).unwrap();
+            assert_eq!(
+                cert.pathlen,
+                Some(PathLen {
+                    length: 2,
+                    chain: Vec::new(),
+                })
+            );
+        }
+
+        #[test]
+        fn mixed_chain_maps_id_and_file_rows_in_order() {
+            // Setup: one `id` row followed by one `file` row.
+            let mut form = pathlen_cert();
+            form.chain = vec![
+                ChainRow {
+                    kind: 0,
+                    value: "root".to_string(),
+                },
+                ChainRow {
+                    kind: 1,
+                    value: "root.pem".to_string(),
+                },
+            ];
+
+            // Invoke
+            let cert = cert_from_form(&form).unwrap();
+
+            // Expect: kinds map to their ChainRef variants, order preserved.
+            let pathlen = cert.pathlen.unwrap();
+            assert_eq!(
+                pathlen.chain,
+                vec![
+                    ChainRef::Id("root".to_string()),
+                    ChainRef::File("root.pem".to_string()),
+                ]
+            );
+        }
+
+        #[test]
+        fn rejects_pathlen_on_non_ca_certificate() {
+            let mut form = pathlen_cert();
+            form.ca = false;
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("CA"), "{err}");
+        }
+
+        #[test]
+        fn rejects_blank_length() {
+            let mut form = pathlen_cert();
+            form.pathlen_length = "   ".to_string();
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("required"), "{err}");
+        }
+
+        #[test]
+        fn rejects_negative_length() {
+            let mut form = pathlen_cert();
+            form.pathlen_length = "-1".to_string();
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("non-negative"), "{err}");
+        }
+
+        #[test]
+        fn rejects_non_numeric_length() {
+            let mut form = pathlen_cert();
+            form.pathlen_length = "abc".to_string();
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("non-negative"), "{err}");
+        }
+
+        #[test]
+        fn rejects_blank_chain_row_naming_its_one_based_position() {
+            let mut form = pathlen_cert();
+            form.chain = vec![
+                ChainRow {
+                    kind: 0,
+                    value: "root".to_string(),
+                },
+                ChainRow {
+                    kind: 1,
+                    value: "  ".to_string(),
+                },
+            ];
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("entry 2"), "{err}");
+        }
+
+        #[test]
+        fn rejects_out_of_range_chain_kind() {
+            let mut form = pathlen_cert();
+            form.chain = vec![ChainRow {
+                kind: CHAIN_KIND_OPTIONS.len(),
+                value: "root".to_string(),
+            }];
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("chain kind"), "{err}");
         }
     }
 
@@ -1282,6 +1528,47 @@ mod tests {
             assert_eq!(reason_index(&Reason::KeyCompromise), 1);
             assert_eq!(reason_index(&Reason::CaCompromise), 2);
         }
+
+        #[test]
+        fn path_len_fields_none_maps_to_disabled_and_empty() {
+            assert_eq!(path_len_fields(&None), (false, String::new()));
+        }
+
+        #[test]
+        fn path_len_fields_some_maps_to_enabled_and_length_buffer() {
+            let pathlen = Some(PathLen {
+                length: 3,
+                chain: Vec::new(),
+            });
+            assert_eq!(path_len_fields(&pathlen), (true, "3".to_string()));
+        }
+
+        #[test]
+        fn chain_rows_none_is_empty() {
+            assert!(chain_rows(&None).is_empty());
+        }
+
+        #[test]
+        fn chain_rows_maps_id_and_file_back_to_kinds() {
+            // Setup: an `id` entry then a `file` entry.
+            let pathlen = Some(PathLen {
+                length: 1,
+                chain: vec![
+                    ChainRef::Id("root".to_string()),
+                    ChainRef::File("root.pem".to_string()),
+                ],
+            });
+
+            // Invoke
+            let rows = chain_rows(&pathlen);
+
+            // Expect: Id -> kind 0, File -> kind 1, order and values preserved.
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].kind, 0);
+            assert_eq!(rows[0].value, "root");
+            assert_eq!(rows[1].kind, 1);
+            assert_eq!(rows[1].value, "root.pem");
+        }
     }
 
     mod cert_round_trip {
@@ -1298,6 +1585,18 @@ mod tests {
                 altnames: "a.com, b.com".to_string(),
                 ca: true,
                 valid_to: "2030-01-01".to_string(),
+                pathlen_enabled: true,
+                pathlen_length: "2".to_string(),
+                chain: vec![
+                    ChainRow {
+                        kind: 0,
+                        value: "root".to_string(),
+                    },
+                    ChainRow {
+                        kind: 1,
+                        value: "root.pem".to_string(),
+                    },
+                ],
                 ..CertForm::default()
             };
             form.key_type = KEY_TYPE_OPTIONS
@@ -1346,6 +1645,13 @@ mod tests {
                 restored.signer.private_key_pem_file,
                 original.signer.private_key_pem_file
             );
+            assert_eq!(restored.pathlen_enabled, original.pathlen_enabled);
+            assert_eq!(restored.pathlen_length, original.pathlen_length);
+            assert_eq!(restored.chain.len(), original.chain.len());
+            for (restored_row, original_row) in restored.chain.iter().zip(&original.chain) {
+                assert_eq!(restored_row.kind, original_row.kind);
+                assert_eq!(restored_row.value, original_row.value);
+            }
         }
 
         #[test]
@@ -1379,6 +1685,9 @@ mod tests {
             assert_eq!(restored.signer.private_key_pem_file, "");
             assert_eq!(restored.usage, vec![false; USAGE_OPTIONS.len()]);
             assert_eq!(restored.policies, vec![false; POLICY_OPTIONS.len()]);
+            assert!(!restored.pathlen_enabled);
+            assert_eq!(restored.pathlen_length, "");
+            assert!(restored.chain.is_empty());
         }
     }
 
@@ -1424,6 +1733,18 @@ mod tests {
                     cert_pem_file: "c.pem".to_string(),
                     private_key_pem_file: "k.pem".to_string(),
                 },
+                pathlen_enabled: true,
+                pathlen_length: "1".to_string(),
+                chain: vec![
+                    ChainRow {
+                        kind: 1,
+                        value: "root.pem".to_string(),
+                    },
+                    ChainRow {
+                        kind: 0,
+                        value: "inter".to_string(),
+                    },
+                ],
                 ..CsrForm::default()
             };
             original.policies[0] = true;
@@ -1440,6 +1761,13 @@ mod tests {
             assert_eq!(restored.signer.cert_pem_file, "c.pem");
             assert_eq!(restored.signer.private_key_pem_file, "k.pem");
             assert_eq!(restored.policies, original.policies);
+            assert_eq!(restored.pathlen_enabled, original.pathlen_enabled);
+            assert_eq!(restored.pathlen_length, original.pathlen_length);
+            assert_eq!(restored.chain.len(), original.chain.len());
+            for (restored_row, original_row) in restored.chain.iter().zip(&original.chain) {
+                assert_eq!(restored_row.kind, original_row.kind);
+                assert_eq!(restored_row.value, original_row.value);
+            }
         }
     }
 

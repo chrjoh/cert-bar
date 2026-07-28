@@ -1827,7 +1827,11 @@ mod reducer {
     /// Wraps a `(screen, field)` into the `FillField` purpose that replaced the
     /// old bare `BrowseTarget` on `Effect::ReadDir` / `set_browser_entries`.
     fn fill(screen: Screen, field: usize) -> BrowsePurpose {
-        BrowsePurpose::FillField(BrowseTarget { screen, field })
+        BrowsePurpose::FillField(BrowseTarget {
+            screen,
+            field,
+            row: None,
+        })
     }
 
     // --- #1/#2/#3 — Generate / Save confirm dialog funnel ------------------
@@ -3473,5 +3477,466 @@ mod multi_entry {
         assert_eq!(reread.csrs[0].id, "csr1");
         assert_eq!(reread.csrs[1].id, "csr2");
         assert_eq!(reread.to_sign[0].csr_pem_file, "./certs/csr1_csr.pem");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group 8: pathlen in the TUI form <-> config path (feature 09) — tui-gated
+//
+// The headline regression for feature 09: `convert.rs` used to hard-code
+// `pathlen: None` in both `cert_from_form` and the sign-mode arm of
+// `csr_from_form`, so `Ctrl+L` on `examples/test_pathlen.yaml` followed by
+// Save YAML silently dropped every `pathlen` block. These tests drive the same
+// public two-step the TUI runs (`read_*_config` -> `*_to_form` for load,
+// `*_from_form` -> `write_*_config` for save) against the real example
+// fixtures and prove pathlen survives end to end.
+//
+// Sub-modules:
+//   load_to_form          — R6 reverse mapping from both example configs
+//   round_trip_no_data_loss — the silent-drop regression itself
+//   save_omission         — unset group omits `pathlen:`; empty chain omits
+//                            `chain:` (`skip_serializing_if`)
+//   sign_mode_csr         — a `signing_requests` entry with pathlen
+//   validation            — R5 errors surface as Err, never a panic
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod pathlen {
+    use cert_bar::config::{
+        Certificate, ChainRef, PathLen, read_certificate_config, write_certificate_config,
+    };
+    use cert_bar::tui::app::{CHAIN_KIND_OPTIONS, CertForm, ChainRow};
+    use cert_bar::tui::convert::{cert_from_form, cert_to_form};
+    use tempfile::TempDir;
+
+    const EXAMPLE_ID_CHAIN: &str = "examples/test_pathlen.yaml";
+    const EXAMPLE_FILE_CHAIN: &str = "examples/test_pathlen_from_file.yaml";
+
+    /// Index of a chain kind (`"id"` / `"file"`) in [`CHAIN_KIND_OPTIONS`].
+    fn kind_index(kind: &str) -> usize {
+        CHAIN_KIND_OPTIONS.iter().position(|k| *k == kind).unwrap()
+    }
+
+    fn temp_yaml(name: &str) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
+    }
+
+    /// A valid CA cert form with the pathlen group enabled — the base fixture
+    /// the validation/omission tests perturb.
+    fn ca_form_with_pathlen(length: &str) -> CertForm {
+        CertForm {
+            id: "plca".to_string(),
+            common_name: "PathLen CA".to_string(),
+            country: "SE".to_string(),
+            organization: "Org".to_string(),
+            ca: true,
+            pathlen_enabled: true,
+            pathlen_length: length.to_string(),
+            ..CertForm::default()
+        }
+    }
+
+    // --- R6: load -> form -------------------------------------------------
+
+    mod load_to_form {
+        use super::*;
+
+        #[test]
+        fn loading_test_pathlen_yaml_populates_cert_forms() {
+            // Setup: the checked-in 4-cert id-chain fixture.
+            let certs = read_certificate_config(EXAMPLE_ID_CHAIN).unwrap();
+            assert_eq!(
+                certs.len(),
+                4,
+                "fixture holds rootca/maincadoc/intercadoc/leaf"
+            );
+
+            // Invoke: reverse-map every entry exactly as Ctrl+L does.
+            let forms: Vec<CertForm> = certs.iter().map(cert_to_form).collect();
+
+            // Expect: rootca -> enabled, length "2", no chain.
+            assert_eq!(certs[0].id, "rootca");
+            assert!(forms[0].pathlen_enabled);
+            assert_eq!(forms[0].pathlen_length, "2");
+            assert!(forms[0].chain.is_empty());
+
+            // maincadoc -> enabled, length "1", chain omitted in YAML -> empty.
+            assert_eq!(certs[1].id, "maincadoc");
+            assert!(forms[1].pathlen_enabled);
+            assert_eq!(forms[1].pathlen_length, "1");
+            assert!(forms[1].chain.is_empty());
+
+            // intercadoc -> enabled, length "0", one `id: rootca` chain row.
+            assert_eq!(certs[2].id, "intercadoc");
+            assert!(forms[2].pathlen_enabled);
+            assert_eq!(forms[2].pathlen_length, "0");
+            assert_eq!(forms[2].chain.len(), 1);
+            assert_eq!(forms[2].chain[0].kind, kind_index("id"));
+            assert_eq!(forms[2].chain[0].value, "rootca");
+
+            // leaf -> group disabled, empty length buffer.
+            assert_eq!(certs[3].id, "leaf");
+            assert!(!forms[3].pathlen_enabled);
+            assert_eq!(forms[3].pathlen_length, "");
+            assert!(forms[3].chain.is_empty());
+
+            // R6 cursor state: fresh load parks the chain UI at the top,
+            // outside the table.
+            for form in &forms {
+                assert_eq!(form.chain_cursor, 0);
+                assert!(!form.chain_focus);
+            }
+        }
+
+        #[test]
+        fn loading_test_pathlen_from_file_yaml_populates_file_chain_row() {
+            // Setup: the file-signer fixture with a `file:` chain entry.
+            let certs = read_certificate_config(EXAMPLE_FILE_CHAIN).unwrap();
+            assert_eq!(certs.len(), 1);
+            assert_eq!(certs[0].id, "intercdfromfile");
+
+            // Invoke.
+            let form = cert_to_form(&certs[0]);
+
+            // Expect: enabled, length "0", one `file:` row with the PEM path.
+            assert!(form.pathlen_enabled);
+            assert_eq!(form.pathlen_length, "0");
+            assert_eq!(form.chain.len(), 1);
+            assert_eq!(form.chain[0].kind, kind_index("file"));
+            assert_eq!(form.chain[0].value, "./certs/rootca_cert.pem");
+            assert_eq!(form.chain_cursor, 0);
+            assert!(!form.chain_focus);
+        }
+    }
+
+    // --- The data-loss regression: load -> save must not drop pathlen ------
+
+    mod round_trip_no_data_loss {
+        use super::*;
+
+        /// Runs the exact load -> save two-step the TUI performs (`Ctrl+L`
+        /// then Save YAML): read the fixture, reverse-map every cert to form
+        /// state, forward-map it back, write with `write_certificate_config`,
+        /// and re-read. Returns (original, reread) for comparison.
+        fn tui_load_save_round_trip(fixture: &str) -> (Vec<Certificate>, Vec<Certificate>) {
+            let original = read_certificate_config(fixture).unwrap();
+
+            let restored: Vec<Certificate> = original
+                .iter()
+                .map(|c| cert_from_form(&cert_to_form(c)).unwrap())
+                .collect();
+
+            let (_dir, path) = temp_yaml("pathlen_out.yaml");
+            write_certificate_config(restored, &path).unwrap();
+            let reread = read_certificate_config(&path).unwrap();
+            (original, reread)
+        }
+
+        #[test]
+        fn save_after_load_does_not_silently_drop_any_pathlen_block() {
+            // The regression the `pathlen: None` placeholders caused: before
+            // feature 09, Ctrl+L + Save YAML wrote the config back WITHOUT
+            // `pathlen`, losing data. Every block must survive identically.
+            let (original, reread) = tui_load_save_round_trip(EXAMPLE_ID_CHAIN);
+
+            assert_eq!(reread.len(), original.len());
+            for (orig, back) in original.iter().zip(&reread) {
+                assert_eq!(back.id, orig.id, "order must be preserved");
+                assert_eq!(
+                    back.pathlen, orig.pathlen,
+                    "pathlen for '{}' must round-trip unchanged (length AND chain, in order)",
+                    orig.id
+                );
+            }
+
+            // Spot-check the shapes so the assertion is not vacuous.
+            assert_eq!(
+                reread[0].pathlen,
+                Some(PathLen {
+                    length: 2,
+                    chain: Vec::new(),
+                })
+            );
+            assert_eq!(
+                reread[2].pathlen,
+                Some(PathLen {
+                    length: 0,
+                    chain: vec![ChainRef::Id("rootca".to_string())],
+                })
+            );
+            assert_eq!(reread[3].pathlen, None, "leaf must stay pathlen-free");
+        }
+
+        #[test]
+        fn save_after_load_preserves_file_chain_pathlen() {
+            // The `file:` chain variant must survive the same loop.
+            let (original, reread) = tui_load_save_round_trip(EXAMPLE_FILE_CHAIN);
+
+            assert_eq!(reread.len(), 1);
+            assert_eq!(reread[0].pathlen, original[0].pathlen);
+            assert_eq!(
+                reread[0].pathlen,
+                Some(PathLen {
+                    length: 0,
+                    chain: vec![ChainRef::File("./certs/rootca_cert.pem".to_string())],
+                })
+            );
+        }
+    }
+
+    // --- Save omits what is unset ------------------------------------------
+
+    mod save_omission {
+        use super::*;
+
+        #[test]
+        fn disabled_pathlen_writes_no_pathlen_key() {
+            // Setup: a form with the group off (default), stale buffers left
+            // behind on purpose — disabling must win over leftover text.
+            let mut form = ca_form_with_pathlen("2");
+            form.pathlen_enabled = false;
+            form.chain.push(ChainRow {
+                kind: kind_index("id"),
+                value: "stale".to_string(),
+            });
+
+            // Invoke: convert and write.
+            let cert = cert_from_form(&form).unwrap();
+            assert_eq!(cert.pathlen, None, "disabled group maps to None");
+            let (_dir, path) = temp_yaml("no_pathlen.yaml");
+            write_certificate_config(vec![cert], &path).unwrap();
+
+            // Expect: the raw YAML has no `pathlen:` key at all.
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !yaml.contains("pathlen"),
+                "unset pathlen must be omitted from the YAML:\n{yaml}"
+            );
+        }
+
+        #[test]
+        fn enabled_empty_chain_writes_length_without_chain_key() {
+            // Setup: enabled, length 3, no chain rows.
+            let form = ca_form_with_pathlen("3");
+
+            // Invoke.
+            let cert = cert_from_form(&form).unwrap();
+            assert_eq!(
+                cert.pathlen,
+                Some(PathLen {
+                    length: 3,
+                    chain: Vec::new(),
+                })
+            );
+            let (_dir, path) = temp_yaml("len_only.yaml");
+            write_certificate_config(vec![cert], &path).unwrap();
+
+            // Expect: `pathlen:` + `length:` written, `chain:` omitted
+            // (`skip_serializing_if = "Vec::is_empty"` on `PathLen::chain`).
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                yaml.contains("pathlen"),
+                "pathlen key must be written:\n{yaml}"
+            );
+            assert!(
+                yaml.contains("length: 3"),
+                "length must be written:\n{yaml}"
+            );
+            assert!(
+                !yaml.contains("chain"),
+                "empty chain must be omitted from the YAML:\n{yaml}"
+            );
+        }
+    }
+
+    // --- Sign-mode CSR ------------------------------------------------------
+
+    mod sign_mode_csr {
+        use super::*;
+        use cert_bar::config::{
+            CsrData, Signer, SigningRequest, read_csr_config, write_csr_config,
+        };
+        use cert_bar::tui::convert::{csr_from_form, signing_request_to_form};
+
+        /// `CsrData` has no `Debug`; extract the `Ok` value via `match`.
+        fn ok_csr(result: Result<CsrData, String>) -> CsrData {
+            match result {
+                Ok(data) => data,
+                Err(e) => panic!("expected Ok CsrData, got Err: {e}"),
+            }
+        }
+
+        fn request_with_pathlen() -> SigningRequest {
+            SigningRequest {
+                csr_pem_file: "req.pem".to_string(),
+                signer: Signer {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                validto: None,
+                ca: Some(true),
+                policies: None,
+                pathlen: Some(PathLen {
+                    length: 1,
+                    chain: vec![ChainRef::File("./certs/rootca_cert.pem".to_string())],
+                }),
+            }
+        }
+
+        #[test]
+        fn signing_request_pathlen_loads_into_sign_mode_form() {
+            // Setup: a config with only a `signing_requests` entry carrying
+            // pathlen, written and re-read through the real config layer.
+            let req = request_with_pathlen();
+            let (_dir, path) = temp_yaml("sign_pathlen.yaml");
+            write_csr_config(
+                CsrData {
+                    csrs: Vec::new(),
+                    to_sign: vec![req],
+                },
+                &path,
+            )
+            .unwrap();
+            let data = read_csr_config(&path).unwrap();
+
+            // Invoke.
+            let form = signing_request_to_form(&data.to_sign[0]);
+
+            // Expect: sign mode with the pathlen group populated.
+            assert!(form.sign_mode);
+            assert!(form.pathlen_enabled);
+            assert_eq!(form.pathlen_length, "1");
+            assert_eq!(form.chain.len(), 1);
+            assert_eq!(form.chain[0].kind, kind_index("file"));
+            assert_eq!(form.chain[0].value, "./certs/rootca_cert.pem");
+            assert_eq!(form.chain_cursor, 0);
+            assert!(!form.chain_focus);
+        }
+
+        #[test]
+        fn signing_request_pathlen_round_trips_via_form() {
+            // The sign-mode twin of the cert regression: the second
+            // `pathlen: None` placeholder lived in `csr_from_form`.
+            let original = request_with_pathlen();
+
+            // Invoke: reverse -> forward -> write -> re-read.
+            let form = signing_request_to_form(&original);
+            let restored = ok_csr(csr_from_form(&form));
+            assert!(restored.csrs.is_empty());
+            assert_eq!(restored.to_sign.len(), 1);
+
+            let (_dir, path) = temp_yaml("sign_pathlen_rt.yaml");
+            write_csr_config(restored, &path).unwrap();
+            let reread = read_csr_config(&path).unwrap();
+
+            // Expect: the whole request — pathlen included — is identical.
+            assert_eq!(reread.to_sign.len(), 1);
+            assert_eq!(reread.to_sign[0], original);
+            assert_eq!(
+                reread.to_sign[0].pathlen,
+                Some(PathLen {
+                    length: 1,
+                    chain: vec![ChainRef::File("./certs/rootca_cert.pem".to_string())],
+                })
+            );
+        }
+    }
+
+    // --- R5: validation surfaces as an Err, not a panic ---------------------
+
+    mod validation {
+        use super::*;
+        use cert_bar::tui::app::{CsrForm, SignerState};
+        use cert_bar::tui::convert::csr_from_form;
+
+        /// `CsrData` has no `Debug`; extract the error string via `match`.
+        fn err_of<T>(result: Result<T, String>) -> String {
+            match result {
+                Ok(_) => panic!("expected Err, got Ok"),
+                Err(e) => e,
+            }
+        }
+
+        #[test]
+        fn pathlen_on_non_ca_cert_errors_with_ca_message() {
+            // pathLen is a BasicConstraints CA field; the generation pipeline
+            // rejects it on a leaf, so the form boundary must too.
+            let mut form = ca_form_with_pathlen("1");
+            form.ca = false;
+
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(
+                err.contains("CA"),
+                "must point at the CA requirement: {err}"
+            );
+        }
+
+        #[test]
+        fn blank_pathlen_length_errors_required() {
+            let form = ca_form_with_pathlen("   ");
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("required"), "{err}");
+        }
+
+        #[test]
+        fn non_numeric_pathlen_length_errors() {
+            let form = ca_form_with_pathlen("two");
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("non-negative integer"), "{err}");
+        }
+
+        #[test]
+        fn negative_pathlen_length_errors() {
+            // "-1" does not parse as u32 — same pointed message.
+            let form = ca_form_with_pathlen("-1");
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("non-negative integer"), "{err}");
+        }
+
+        #[test]
+        fn blank_chain_row_errors_with_row_number() {
+            // Row 2 is blank; the message is 1-based to match the chain table.
+            let mut form = ca_form_with_pathlen("0");
+            form.chain = vec![
+                ChainRow {
+                    kind: kind_index("id"),
+                    value: "rootca".to_string(),
+                },
+                ChainRow {
+                    kind: kind_index("file"),
+                    value: "   ".to_string(),
+                },
+            ];
+
+            let err = cert_from_form(&form).unwrap_err();
+            assert!(err.contains("has no value"), "{err}");
+            assert!(err.contains('2'), "must name the 1-based row: {err}");
+        }
+
+        #[test]
+        fn sign_mode_pathlen_on_non_ca_errors_with_ca_message() {
+            // The same CA guard on the sign-mode CSR arm.
+            let form = CsrForm {
+                id: "req1".to_string(),
+                sign_mode: true,
+                csr_pem_file: "req.pem".to_string(),
+                signer: SignerState {
+                    cert_pem_file: "c.pem".to_string(),
+                    private_key_pem_file: "k.pem".to_string(),
+                },
+                ca: false,
+                pathlen_enabled: true,
+                pathlen_length: "1".to_string(),
+                ..CsrForm::default()
+            };
+
+            let err = err_of(csr_from_form(&form));
+            assert!(
+                err.contains("CA"),
+                "must point at the CA requirement: {err}"
+            );
+        }
     }
 }

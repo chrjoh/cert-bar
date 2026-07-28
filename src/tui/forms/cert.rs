@@ -27,18 +27,27 @@
 //! | 12  | signer cert pem  | text input (optional, path)     |
 //! | 13  | signer key pem   | text input (optional, path)     |
 //! | 14  | policies         | multi-select (`POLICY_OPTIONS`)  |
+//! | 15  | pathlen          | boolean toggle                  |
+//! | 16  | length           | text input                      |
+//!
+//! Chain rows (`pathlen.chain`) are **not** fields: they live in a bordered
+//! Chain pane below the form and are addressed by `chain_cursor`, like the CRL
+//! revoked rows.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    Wrap,
+};
 
 use super::widgets::{
     cycler_row, header, multiselect_rows, note_row, optional_text_row, render_form, text_row,
     toggle_row,
 };
 use crate::tui::app::{
-    App, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
+    App, CHAIN_KIND_OPTIONS, CertForm, Focus, HASH_ALG_OPTIONS, KEY_TYPE_OPTIONS, POLICY_OPTIONS,
     RSA_KEY_LENGTH_OPTIONS, USAGE_OPTIONS,
 };
 use crate::tui::theme::Theme;
@@ -48,15 +57,24 @@ use crate::tui::theme::Theme;
 const ENTRIES_MAX_ROWS: u16 = 6;
 /// Minimum rows the sub-list aims for (plus its top/bottom border).
 const ENTRIES_MIN_ROWS: u16 = 1;
+/// Maximum content rows (header + chain entries) the Chain pane grows to before
+/// its table scrolls via the cursor.
+const CHAIN_MAX_ROWS: u16 = 6;
+/// Minimum rows (3 content + 2 borders) the form block keeps on short
+/// terminals; the Chain pane shrinks first.
+const FORM_MIN_ROWS: u16 = 5;
 
 /// Renders the Certificate screen into `area`: a Certificates sub-list on top,
-/// the form for the active entry (`form`) below.
+/// the form for the active entry (`form`) below, and — while `pathlen` is on —
+/// the `pathlen.chain` pane at the bottom.
 ///
 /// `form` is the active entry resolved by the caller; `app.cert_list` /
 /// `app.cert_index` drive the sub-list. The sub-list takes a small `Length`
 /// (capped at [`ENTRIES_MAX_ROWS`] content rows) that shrinks before the form
 /// on short terminals; the form takes the remaining `Min(0)` and keeps its
-/// existing scroll behavior.
+/// existing scroll behavior. The Chain pane takes a bottom `Length` that is 0
+/// (hidden) while `pathlen_enabled` is off and never pushes the form below
+/// [`FORM_MIN_ROWS`].
 pub fn render(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, theme: &Theme) {
     // Sub-list height: one row per entry (capped), plus the two border rows,
     // but never so tall it would crowd out the form on a short pane.
@@ -66,13 +84,34 @@ pub fn render(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, theme: 
     let max_list_height = area.height.saturating_sub(3);
     let list_height = (wanted_rows + 2).min(max_list_height);
 
+    // Chain pane height: header row + one row per entry (or the empty-state
+    // hint), capped at CHAIN_MAX_ROWS content rows, plus the two border rows.
+    // Hidden (0) while pathlen is off; the pane shrinks before the form.
+    let chain_wanted = if form.pathlen_enabled {
+        (form.chain.len().max(1) as u16 + 1).min(CHAIN_MAX_ROWS) + 2
+    } else {
+        0
+    };
+    let max_chain_height = area
+        .height
+        .saturating_sub(list_height)
+        .saturating_sub(FORM_MIN_ROWS);
+    let chain_height = chain_wanted.min(max_chain_height);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(list_height), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(list_height),
+            Constraint::Min(0),
+            Constraint::Length(chain_height),
+        ])
         .split(area);
 
     render_entries(frame, chunks[0], app, theme);
     render_form_pane(frame, chunks[1], form, app, theme);
+    if form.pathlen_enabled {
+        render_chain(frame, chunks[2], form, app, theme);
+    }
 }
 
 /// Renders the Certificates sub-list (entry ids + a compact CA/parent tag).
@@ -216,6 +255,26 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
         f == 14,
         theme,
     ));
+    lines.extend([Line::from(""), header("Path length", theme)]);
+    let pathlen_start = lines.len();
+    // `length` is required once `pathlen` is on (editable box + block cursor
+    // when focused); while it is off the row still renders, as a note so the
+    // disabled state reads without color (mirrors the `hash alg` n/a row).
+    let length_row = if form.pathlen_enabled {
+        text_row("length", &form.pathlen_length, f == 16, theme)
+    } else {
+        note_row("length", "n/a — enable pathlen first", f == 16, theme)
+    };
+    lines.extend([
+        toggle_row(
+            "pathlen",
+            form.pathlen_enabled,
+            "set pathLen",
+            f == 15,
+            theme,
+        ),
+        length_row,
+    ]);
 
     // Line index of the focused field, so the form scrolls to keep it visible.
     // The usage group (field 6) spans `usage_len` rows; its active line is the
@@ -223,20 +282,103 @@ fn render_form_pane(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, t
     // Fields 12/13 sit past the blank spacer + the "Signer" header, so they are
     // offset by an additional 2 lines beyond the 7..=11 block start. Field 14
     // (the policies multi-select) sits past a second blank + header, tracked by
-    // `policy_start`.
+    // `policy_start`. The pathlen group (fields 15/16) sits past a third blank
+    // + header, tracked by `pathlen_start`.
     let active_line = match f {
         0..=5 => f,
         6 => usage_start + form.usage_cursor.min(usage_len.saturating_sub(1)),
         7..=11 => after_usage + (f - 7),
         12 => after_usage + 7, // signer cert pem: 5 rows (7..=11) + blank + header
         13 => after_usage + 8, // signer key pem
-        _ => policy_start + form.policies_cursor.min(policy_len.saturating_sub(1)),
+        14 => policy_start + form.policies_cursor.min(policy_len.saturating_sub(1)),
+        15 => pathlen_start,
+        _ => pathlen_start + 1, // 16: length
     };
 
     let total = app.cert_list.len();
     let current = app.cert_index.min(total.saturating_sub(1)) + 1;
     let title = format!("Certificate — editing {current}/{total}");
     render_form(frame, area, &title, lines, active_line, app, theme);
+}
+
+/// Renders the bordered `pathlen.chain` pane below the form (shown only while
+/// `pathlen_enabled`): a table of ancestor rows with a `kind` cycler column
+/// (`< id ▸ >` / `< file ▸ >`) and an editable `value` column. The cursor row
+/// carries `> ` + the reversed selection style **only** while `form.chain_focus`
+/// so the highlight never claims focus the table does not have; that row's
+/// value cell appends a block cursor `█` since the value is typed inline.
+/// Mirrors `crl.rs::render_revoked_table`.
+fn render_chain(frame: &mut Frame, area: Rect, form: &CertForm, app: &App, theme: &Theme) {
+    if area.height < 3 {
+        return;
+    }
+    let focused = app.focus == Focus::Form;
+    let (border_type, border_style) = if focused {
+        (BorderType::Thick, theme.focused_border())
+    } else {
+        (BorderType::Plain, theme.border())
+    };
+
+    let title = format!(" Chain ({}) — a add · d delete ", form.chain.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(border_style)
+        .title(Line::from(title).style(theme.title()))
+        .style(theme.base());
+
+    if form.chain.is_empty() {
+        let hint = Paragraph::new(
+            "No chain entries — omit to auto-derive from parent. Press 'a' on the pathlen row.",
+        )
+        .block(block)
+        .style(theme.muted())
+        .wrap(Wrap { trim: false });
+        frame.render_widget(hint, area);
+        return;
+    }
+
+    let header_row =
+        Row::new(vec![Cell::from("kind"), Cell::from("value")]).style(theme.active_label());
+
+    let rows: Vec<Row> = form
+        .chain
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let kind = CHAIN_KIND_OPTIONS[r.kind % CHAIN_KIND_OPTIONS.len()];
+            let is_cursor = form.chain_focus && i == form.chain_cursor;
+            // The cursor row shows the inline block cursor (the value is typed
+            // in place); a blank, non-cursor value reads as `(empty)` — muted,
+            // but also textually distinct, never color alone.
+            let value_cell = if is_cursor {
+                Cell::from(format!("{}█", r.value))
+            } else if r.value.is_empty() {
+                Cell::from("(empty)").style(theme.muted())
+            } else {
+                Cell::from(r.value.clone())
+            };
+            Row::new(vec![Cell::from(format!("< {kind} ▸ >")), value_cell])
+        })
+        .collect();
+
+    let widths = [Constraint::Length(14), Constraint::Min(0)];
+    let table = Table::new(rows, widths)
+        .header(header_row)
+        .block(block)
+        .style(theme.base())
+        .row_highlight_style(theme.selected())
+        .highlight_symbol("> ");
+
+    // Select a row only while the chain table actually holds keyboard focus,
+    // so the user is never misled about where typing goes.
+    let mut state = TableState::default();
+    if form.chain_focus {
+        state.select(Some(
+            form.chain_cursor.min(form.chain.len().saturating_sub(1)),
+        ));
+    }
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 /// A path-input row: an [`optional_text_row`] with a right-side muted
@@ -254,6 +396,7 @@ fn path_row(label: &str, value: &str, active: bool, theme: &Theme) -> Line<'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::ChainRow;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -277,10 +420,44 @@ mod tests {
             .collect()
     }
 
+    /// Renders and returns the buffer as one `String` per terminal row, so a
+    /// test can assert which physical line carries the `> ` cursor marker.
+    fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        terminal
+            .draw(|frame| render(frame, frame.area(), app.cert(), app, &theme))
+            .expect("draw");
+        let content: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        content.chunks(w as usize).map(|row| row.concat()).collect()
+    }
+
     fn cert_app() -> App {
         let mut app = App::new("./out".to_string());
         app.screen = crate::tui::app::Screen::Cert;
         app.focus = crate::tui::app::Focus::Form;
+        app
+    }
+
+    /// A cert app with `pathlen` enabled and the given `(kind, value)` chain.
+    fn pathlen_app(chain: &[(usize, &str)]) -> App {
+        let mut app = cert_app();
+        let form = app.cert_mut();
+        form.pathlen_enabled = true;
+        form.chain = chain
+            .iter()
+            .map(|(kind, value)| ChainRow {
+                kind: *kind,
+                value: value.to_string(),
+            })
+            .collect();
         app
     }
 
@@ -383,6 +560,152 @@ mod tests {
         assert!(
             out.contains("> "),
             "the highlighted policy option shows a '>' cursor marker"
+        );
+    }
+
+    #[test]
+    fn pathlen_group_renders_header_toggle_and_length() {
+        // Tall enough that the bottom pathlen group is visible.
+        let app = cert_app();
+        let out = render_sized(&app, 60, 56);
+        assert!(out.contains("Path length"), "pathlen header renders");
+        assert!(
+            out.contains("set pathLen"),
+            "pathlen toggle (field 15) renders"
+        );
+        assert!(
+            out.contains("n/a — enable pathlen first"),
+            "length row (field 16) renders as a note while pathlen is off"
+        );
+    }
+
+    #[test]
+    fn pathlen_length_is_editable_when_enabled() {
+        let mut app = pathlen_app(&[]);
+        app.cert_mut().pathlen_length = "2".to_string();
+        app.cert_mut().field = 16; // focus the length row
+        let out = render_sized(&app, 60, 56);
+        assert!(
+            out.contains("[2█]"),
+            "enabled length row shows the editable box with the block cursor"
+        );
+        assert!(
+            !out.contains("enable pathlen first"),
+            "the n/a note is gone once pathlen is on"
+        );
+    }
+
+    #[test]
+    fn focused_length_scrolls_into_view_on_short_terminal() {
+        let mut app = pathlen_app(&[]);
+        app.cert_mut().pathlen_length = "2".to_string();
+        app.cert_mut().field = 16; // last field, at the bottom of the form
+        let out = render_sized(&app, 60, 24);
+        assert!(
+            out.contains("[2█]"),
+            "the form scrolls so the focused length row stays visible"
+        );
+    }
+
+    #[test]
+    fn chain_pane_renders_title_columns_and_rows() {
+        let app = pathlen_app(&[(0, "rootca"), (1, "./examples/rootca_cert.pem")]);
+        let out = render_sized(&app, 70, 56);
+        assert!(out.contains("Chain (2)"), "pane title shows the row count");
+        assert!(
+            out.contains("a add"),
+            "pane title shows the add/delete hint"
+        );
+        assert!(out.contains("kind"), "kind column header renders");
+        assert!(out.contains("value"), "value column header renders");
+        assert!(out.contains("< id ▸ >"), "id kind renders as a cycler cell");
+        assert!(
+            out.contains("< file ▸ >"),
+            "file kind renders as a cycler cell"
+        );
+        assert!(out.contains("rootca"), "first row value renders");
+        assert!(
+            out.contains("./examples/rootca_cert.pem"),
+            "second row value renders"
+        );
+    }
+
+    #[test]
+    fn chain_cursor_marker_only_when_chain_focused() {
+        let mut app = pathlen_app(&[(0, "aaa"), (0, "bbb")]);
+        app.cert_mut().chain_cursor = 0;
+
+        // Not focused: no row is selected, so no `> ` marker on the rows.
+        let lines = render_lines(&app, 70, 56);
+        let row = lines
+            .iter()
+            .find(|l| l.contains("aaa"))
+            .expect("first chain row renders");
+        assert!(
+            !row.contains("> <"),
+            "no cursor marker while the table is not focused, got: {row:?}"
+        );
+
+        // Focused: the cursor row carries `> ` and the inline block cursor.
+        app.cert_mut().chain_focus = true;
+        let lines = render_lines(&app, 70, 56);
+        let first = lines
+            .iter()
+            .find(|l| l.contains("aaa"))
+            .expect("first chain row renders");
+        let second = lines
+            .iter()
+            .find(|l| l.contains("bbb"))
+            .expect("second chain row renders");
+        assert!(
+            first.contains("> <"),
+            "the cursor row carries the '> ' marker, got: {first:?}"
+        );
+        assert!(
+            first.contains("aaa█"),
+            "the cursor row's value shows the inline block cursor, got: {first:?}"
+        );
+        assert!(
+            !second.contains("> <"),
+            "the non-cursor row has no marker, got: {second:?}"
+        );
+    }
+
+    #[test]
+    fn empty_chain_renders_hint() {
+        let app = pathlen_app(&[]);
+        let out = render_sized(&app, 70, 56);
+        assert!(
+            out.contains("No chain entries"),
+            "empty chain shows the omit hint"
+        );
+        assert!(
+            out.contains("auto-derive"),
+            "the hint explains the auto-derive fallback"
+        );
+    }
+
+    #[test]
+    fn chain_pane_hidden_when_pathlen_disabled() {
+        let mut app = cert_app();
+        app.cert_mut().chain.push(ChainRow {
+            kind: 0,
+            value: "rootca".to_string(),
+        });
+        let out = render_sized(&app, 70, 56);
+        assert!(
+            !out.contains("Chain ("),
+            "the chain pane is absent while pathlen is off"
+        );
+    }
+
+    #[test]
+    fn short_area_keeps_form_visible_with_chain_pane() {
+        let app = pathlen_app(&[(0, "rootca"), (1, "./ca.pem")]);
+        let out = render_sized(&app, 60, 12);
+        assert!(
+            out.contains("Certificate"),
+            "the form block stays visible on a short terminal"
         );
     }
 

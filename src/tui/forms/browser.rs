@@ -188,6 +188,7 @@ mod tests {
             BrowsePurpose::FillField(BrowseTarget {
                 screen: Screen::Cert,
                 field: 12,
+                row: None,
             }),
         )
     }

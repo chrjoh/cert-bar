@@ -102,6 +102,23 @@ pub const POLICY_OPTIONS: &[Policies] = &[
     Policies::AnyPolicy,
 ];
 
+/// Kinds of `pathlen.chain` entry, in cycler order. Index into this slice is
+/// what [`ChainRow::kind`] holds; the labels match the YAML keys of
+/// [`crate::config::ChainRef`] (`- id:` / `- file:`).
+pub const CHAIN_KIND_OPTIONS: &[&str] = &["id", "file"];
+
+/// One `pathlen.chain` row: an ancestor CA above the immediate signer,
+/// identified either by the id of a cert built in the same run (`kind` 0) or
+/// by a path to a PEM cert on disk (`kind` 1). Mirrors
+/// [`crate::config::ChainRef`], held as an index + buffer like [`RevokedRow`].
+#[derive(Debug, Clone, Default)]
+pub struct ChainRow {
+    /// Index into [`CHAIN_KIND_OPTIONS`].
+    pub kind: usize,
+    /// The cert id (kind `id`) or PEM path (kind `file`).
+    pub value: String,
+}
+
 /// Option set for the CRL revocation-reason cycler. Reuses [`Reason`].
 pub const REASON_OPTIONS: &[Reason] = &[
     Reason::Unspecified,
@@ -167,6 +184,19 @@ pub struct CertForm {
     /// Highlighted option within the policies multi-select (moved with ←→; the
     /// option under it is toggled with Space).
     pub policies_cursor: usize,
+    /// Whether `pathlen` is set at all (`Option<PathLen>` in the config).
+    pub pathlen_enabled: bool,
+    /// `pathlen.length` buffer (free text; parsed as `u32` at conversion).
+    pub pathlen_length: String,
+    /// Explicit ancestor chain (`pathlen.chain`), one row per
+    /// [`crate::config::ChainRef`].
+    pub chain: Vec<ChainRow>,
+    /// Chain row the table cursor points at (mirrors `policies_cursor`).
+    pub chain_cursor: usize,
+    /// Whether keyboard focus is currently inside the chain table. Unlike the
+    /// CRL `selected_row` encoding, the cursor is retained when focus leaves so
+    /// `d` on the pathlen toggle row still has a target.
+    pub chain_focus: bool,
     /// Currently focused field index within the form.
     pub field: usize,
 }
@@ -190,6 +220,11 @@ impl Default for CertForm {
             signer: SignerState::default(),
             policies: vec![false; POLICY_OPTIONS.len()],
             policies_cursor: 0,
+            pathlen_enabled: false,
+            pathlen_length: String::new(),
+            chain: Vec::new(),
+            chain_cursor: 0,
+            chain_focus: false,
             field: 0,
         }
     }
@@ -236,6 +271,20 @@ pub struct CsrForm {
     /// Highlighted option within the policies multi-select (moved with ←→; the
     /// option under it is toggled with Space).
     pub policies_cursor: usize,
+    /// Whether `pathlen` is set (sign mode only, like `policies`/`ca`).
+    pub pathlen_enabled: bool,
+    /// `pathlen.length` buffer for sign mode (free text; parsed as `u32` at
+    /// conversion).
+    pub pathlen_length: String,
+    /// Explicit ancestor chain (`pathlen.chain`, sign mode), one row per
+    /// [`crate::config::ChainRef`].
+    pub chain: Vec<ChainRow>,
+    /// Chain row the table cursor points at (mirrors `policies_cursor`).
+    pub chain_cursor: usize,
+    /// Whether keyboard focus is currently inside the chain table. Unlike the
+    /// CRL `selected_row` encoding, the cursor is retained when focus leaves so
+    /// `d` on the pathlen toggle row still has a target.
+    pub chain_focus: bool,
     /// Currently focused field index.
     pub field: usize,
 }
@@ -260,6 +309,11 @@ impl Default for CsrForm {
             ca: false,
             policies: vec![false; POLICY_OPTIONS.len()],
             policies_cursor: 0,
+            pathlen_enabled: false,
+            pathlen_length: String::new(),
+            chain: Vec::new(),
+            chain_cursor: 0,
+            chain_focus: false,
             field: 0,
         }
     }
@@ -355,6 +409,10 @@ pub struct BrowseTarget {
     pub screen: Screen,
     /// The focused field index within that form.
     pub field: usize,
+    /// `Some(i)` targets the i-th `pathlen.chain` row's value instead of a
+    /// fixed field (a focused `file` chain row); `None` is the plain
+    /// field-index routing.
+    pub row: Option<usize>,
 }
 
 /// Why the file-browser overlay is open.
@@ -633,13 +691,17 @@ impl App {
             // Field counts are intentionally generous bounds matching the
             // render order chosen by the forms module; clamping keeps the
             // selection in range even if a form grows.
-            // Cert: 15 fields (0..=14). 0..=13 unchanged (signer key pem at 13);
-            // 14 = the certificate-policies multi-select appended at the end.
-            Screen::Cert => 15,
-            // Csr: 16 fields (0..=15). 0..=12 unchanged; 13 = signer cert pem,
-            // 14 = signer private-key pem (mirrors Cert's 12/13); 15 = the
-            // certificate-policies multi-select (sign mode), appended at the end.
-            Screen::Csr => 16,
+            // Cert: 17 fields (0..=16). 0..=14 unchanged (policies at 14);
+            // 15 = the pathlen toggle, 16 = the pathlen length, appended at the
+            // end. Chain rows are *not* counted here; they are addressed by
+            // `chain_cursor` and reached by stepping past field 16 (see
+            // `move_down`/`move_up`), mirroring the CRL revoked rows.
+            Screen::Cert => 17,
+            // Csr: 18 fields (0..=17). 0..=15 unchanged (policies at 15);
+            // 16 = the pathlen toggle, 17 = the pathlen length (both sign
+            // mode), appended at the end. Chain rows are *not* counted here
+            // (see Cert above).
+            Screen::Csr => 18,
             // Crl: the 3 fixed text fields are `field` 0..=2. Revoked rows are
             // *not* counted here; they are addressed by `selected_row` and
             // reached by stepping past field 2 (see `move_down`/`move_up`).
@@ -1044,8 +1106,23 @@ impl App {
     /// - **Cms**: 1 `data_file`, 2 `recipient`, 3 `signer.cert_pem_file`,
     ///   4 `signer.private_key_pem_file`.
     ///
-    /// Unknown `(screen, field)` pairs are ignored.
+    /// A `Some` [`BrowseTarget::row`] takes precedence and routes into the
+    /// Cert/Csr `pathlen.chain` row's value instead of a fixed field.
+    ///
+    /// Unknown `(screen, field)` pairs (and out-of-range rows) are ignored.
     fn apply_path(&mut self, target: BrowseTarget, path: String) {
+        // Row targets first: a browsed `file` chain row (R4).
+        if let Some(row) = target.row {
+            let chain = match target.screen {
+                Screen::Cert => &mut self.cert_mut().chain,
+                Screen::Csr => &mut self.csr_mut().chain,
+                _ => return,
+            };
+            if let Some(entry) = chain.get_mut(row) {
+                entry.value = path;
+            }
+            return;
+        }
         let buf = match target.screen {
             Screen::Cert => {
                 let cert = self.cert_mut();
@@ -1087,9 +1164,19 @@ impl App {
     }
 
     /// The current text value of the path field identified by `target`, used to
-    /// seed the browser's initial directory. Returns an empty string for
-    /// unknown pairs.
+    /// seed the browser's initial directory. A `Some` [`BrowseTarget::row`]
+    /// reads the Cert/Csr `pathlen.chain` row's value. Returns an empty string
+    /// for unknown pairs (and out-of-range rows).
     fn path_field_value(&self, target: BrowseTarget) -> &str {
+        // Row targets first: a browsed `file` chain row (R4).
+        if let Some(row) = target.row {
+            let chain = match target.screen {
+                Screen::Cert => &self.cert().chain,
+                Screen::Csr => &self.csr().chain,
+                _ => return "",
+            };
+            return chain.get(row).map_or("", |entry| entry.value.as_str());
+        }
         match target.screen {
             Screen::Cert => {
                 let cert = self.cert();
@@ -1198,6 +1285,36 @@ impl App {
             }
             return;
         }
+        // Cert/Csr pathlen chain-table navigation (R2): while the chain table
+        // is focused, Up retreats the cursor; Up from row 0 leaves the table
+        // with `field` parked at the length row. Unlike the CRL encoding the
+        // cursor is *retained*, so `d` on the pathlen toggle row still has a
+        // delete target.
+        if self.focus == Focus::Form {
+            match self.screen {
+                Screen::Cert if self.cert().chain_focus => {
+                    let form = self.cert_mut();
+                    if form.chain_cursor == 0 {
+                        form.chain_focus = false;
+                        form.field = 16;
+                    } else {
+                        form.chain_cursor -= 1;
+                    }
+                    return;
+                }
+                Screen::Csr if self.csr().chain_focus => {
+                    let form = self.csr_mut();
+                    if form.chain_cursor == 0 {
+                        form.chain_focus = false;
+                        form.field = 17;
+                    } else {
+                        form.chain_cursor -= 1;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(field) = self.active_field_mut() {
             *field = field.saturating_sub(1);
         }
@@ -1257,6 +1374,44 @@ impl App {
                     return;
                 }
                 None => {}
+            }
+        }
+        // Cert/Csr pathlen chain-table navigation (R2). Chain rows are *not*
+        // counted in `active_field_count`; they live "below" the length field
+        // (16 cert / 17 csr) and are addressed by `chain_cursor`. Down from the
+        // length field enters the table (when enabled and non-empty) at the
+        // retained cursor; subsequent Downs advance it, clamped at the last row.
+        if self.focus == Focus::Form {
+            match self.screen {
+                Screen::Cert => {
+                    let form = self.cert_mut();
+                    if form.chain_focus {
+                        if form.chain_cursor + 1 < form.chain.len() {
+                            form.chain_cursor += 1;
+                        }
+                        return;
+                    }
+                    if form.field == 16 && form.pathlen_enabled && !form.chain.is_empty() {
+                        form.chain_focus = true;
+                        form.chain_cursor = form.chain_cursor.min(form.chain.len() - 1);
+                        return;
+                    }
+                }
+                Screen::Csr => {
+                    let form = self.csr_mut();
+                    if form.chain_focus {
+                        if form.chain_cursor + 1 < form.chain.len() {
+                            form.chain_cursor += 1;
+                        }
+                        return;
+                    }
+                    if form.field == 17 && form.pathlen_enabled && !form.chain.is_empty() {
+                        form.chain_focus = true;
+                        form.chain_cursor = form.chain_cursor.min(form.chain.len() - 1);
+                        return;
+                    }
+                }
+                _ => {}
             }
         }
         let max = self.active_field_count().saturating_sub(1);
@@ -1329,16 +1484,42 @@ impl App {
         // A compact per-screen match is used here (rather than the
         // `screen_has_entries` predicate) because each arm selects a *different*
         // list/index to mutate; the CRL arm is a separate revoked-row concern.
+        // On the pathlen toggle row (15 cert / 16 csr, with pathlen enabled),
+        // `a`/`d` manage *chain rows* instead of entries. Add/delete is
+        // anchored to the toggle row because `map_key` only emits
+        // `AddRow`/`DeleteRow` when the focused field is not a text buffer, and
+        // both the `length` row and a focused chain row are text buffers.
         match self.screen {
             // Cert/Csr/Cms: append a new entry to the active list and select it.
             // The new entry becomes the one being edited.
             Screen::Cert => {
-                self.cert_list.push(CertForm::default());
-                self.cert_index = self.cert_list.len().saturating_sub(1);
+                if self.focus == Focus::Form
+                    && self.cert().field == 15
+                    && self.cert().pathlen_enabled
+                {
+                    // Append a chain row and enter the table so the user can
+                    // type its value immediately.
+                    let form = self.cert_mut();
+                    form.chain.push(ChainRow::default());
+                    form.chain_cursor = form.chain.len() - 1;
+                    form.chain_focus = true;
+                } else {
+                    self.cert_list.push(CertForm::default());
+                    self.cert_index = self.cert_list.len().saturating_sub(1);
+                }
             }
             Screen::Csr => {
-                self.csr_list.push(CsrForm::default());
-                self.csr_index = self.csr_list.len().saturating_sub(1);
+                if self.focus == Focus::Form && self.csr().field == 16 && self.csr().pathlen_enabled
+                {
+                    // Append a chain row and enter the table (see Cert above).
+                    let form = self.csr_mut();
+                    form.chain.push(ChainRow::default());
+                    form.chain_cursor = form.chain.len() - 1;
+                    form.chain_focus = true;
+                } else {
+                    self.csr_list.push(CsrForm::default());
+                    self.csr_index = self.csr_list.len().saturating_sub(1);
+                }
             }
             Screen::Cms => {
                 self.cms_list.push(CmsForm::default());
@@ -1356,17 +1537,45 @@ impl App {
         // Compact per-screen match: each entry-bearing screen removes from its
         // own list/index, never emptying it (mirrors the `len() > 1` guard); the
         // CRL arm is the separate revoked-row concern.
+        // On the pathlen toggle row, `d` removes the chain row under
+        // `chain_cursor` (the cursor is retained when focus leaves the chain
+        // table exactly so it can serve as this delete target — see `add_row`
+        // for why add/delete is anchored to the toggle row).
         match self.screen {
             // Cert: remove the selected entry, but never empty the list.
             Screen::Cert => {
-                if self.cert_list.len() > 1 {
+                if self.focus == Focus::Form
+                    && self.cert().field == 15
+                    && self.cert().pathlen_enabled
+                {
+                    let form = self.cert_mut();
+                    if form.chain_cursor < form.chain.len() {
+                        form.chain.remove(form.chain_cursor);
+                        form.chain_cursor =
+                            form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                        if form.chain.is_empty() {
+                            form.chain_focus = false;
+                        }
+                    }
+                } else if self.cert_list.len() > 1 {
                     let idx = self.active_cert_index();
                     self.cert_list.remove(idx);
                     self.cert_index = idx.min(self.cert_list.len().saturating_sub(1));
                 }
             }
             Screen::Csr => {
-                if self.csr_list.len() > 1 {
+                if self.focus == Focus::Form && self.csr().field == 16 && self.csr().pathlen_enabled
+                {
+                    let form = self.csr_mut();
+                    if form.chain_cursor < form.chain.len() {
+                        form.chain.remove(form.chain_cursor);
+                        form.chain_cursor =
+                            form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                        if form.chain.is_empty() {
+                            form.chain_focus = false;
+                        }
+                    }
+                } else if self.csr_list.len() > 1 {
                     let idx = self.active_csr_index();
                     self.csr_list.remove(idx);
                     self.csr_index = idx.min(self.csr_list.len().saturating_sub(1));
@@ -1456,6 +1665,19 @@ impl App {
             return None;
         }
         match self.screen {
+            // While the chain table is focused, typing edits the cursor row's
+            // value — unlike the CRL arm below, which returns None while a
+            // revoked row is selected, the chain value is genuinely typable.
+            Screen::Cert if self.cert().chain_focus => {
+                let form = self.cert();
+                let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                form.chain.get(idx).map(|row| &row.value)
+            }
+            Screen::Csr if self.csr().chain_focus => {
+                let form = self.csr();
+                let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                form.chain.get(idx).map(|row| &row.value)
+            }
             Screen::Cert => cert_text_field_ref(self.cert()),
             Screen::Csr => csr_text_field_ref(self.csr()),
             // While a revoked row is selected, focus is in the table (not on a
@@ -1476,6 +1698,18 @@ impl App {
             return None;
         }
         match self.screen {
+            // While the chain table is focused, typing edits the cursor row's
+            // value (see `active_text_field` — kept in lock-step).
+            Screen::Cert if self.cert().chain_focus => {
+                let form = self.cert_mut();
+                let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                form.chain.get_mut(idx).map(|row| &mut row.value)
+            }
+            Screen::Csr if self.csr().chain_focus => {
+                let form = self.csr_mut();
+                let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+                form.chain.get_mut(idx).map(|row| &mut row.value)
+            }
             Screen::Cert => cert_text_field(self.cert_mut()),
             Screen::Csr => csr_text_field(self.csr_mut()),
             // While a revoked row is selected, focus is in the table (not on a
@@ -1618,6 +1852,10 @@ impl App {
     /// - **Cms**: 1 `data_file`, 2 `recipient`, 3 `signer.cert_pem_file`,
     ///   4 `signer.private_key_pem_file`.
     ///
+    /// A focused Cert/Csr `pathlen.chain` row of kind `file` yields a target
+    /// with [`BrowseTarget::row`] set (R4); an `id` row references a cert built
+    /// in the same run — nothing on disk to browse — and yields `None`.
+    ///
     /// developer-03 consumes this to open the file browser via `Ctrl+O`.
     #[must_use]
     pub fn focused_path_field(&self) -> Option<BrowseTarget> {
@@ -1625,6 +1863,16 @@ impl App {
             return None;
         }
         let (field, is_path) = match self.screen {
+            // Chain-table focus first: only `file` rows are browseable, and the
+            // pick routes into that row (field is parked at the length index).
+            Screen::Cert if self.cert().chain_focus => {
+                let form = self.cert();
+                return chain_browse_target(Screen::Cert, &form.chain, form.chain_cursor, 16);
+            }
+            Screen::Csr if self.csr().chain_focus => {
+                let form = self.csr();
+                return chain_browse_target(Screen::Csr, &form.chain, form.chain_cursor, 17);
+            }
             Screen::Cert => {
                 let f = self.cert().field;
                 (f, matches!(f, 12 | 13))
@@ -1646,6 +1894,7 @@ impl App {
         Some(BrowseTarget {
             screen: self.screen,
             field,
+            row: None,
         })
     }
 
@@ -1680,6 +1929,26 @@ fn initial_browse_dir(current: &str) -> std::path::PathBuf {
     }
 }
 
+/// Builds the [`BrowseTarget`] for a focused `pathlen.chain` row, shared by the
+/// Cert and Csr arms of [`App::focused_path_field`]. Only a `file` row (kind
+/// index 1 in [`CHAIN_KIND_OPTIONS`]) points at something on disk; an `id` row
+/// yields `None`. `field` is the form's pathlen-length index, where the field
+/// is parked while the chain table is focused.
+fn chain_browse_target(
+    screen: Screen,
+    chain: &[ChainRow],
+    cursor: usize,
+    field: usize,
+) -> Option<BrowseTarget> {
+    let idx = cursor.min(chain.len().saturating_sub(1));
+    let row = chain.get(idx)?;
+    (row.kind == 1).then_some(BrowseTarget {
+        screen,
+        field,
+        row: Some(idx),
+    })
+}
+
 fn cycle_index(idx: &mut usize, len: usize, forward: bool) {
     if len == 0 {
         return;
@@ -1692,6 +1961,16 @@ fn cycle_index(idx: &mut usize, len: usize, forward: bool) {
 }
 
 fn cycle_cert(form: &mut CertForm, forward: bool) {
+    // While the chain table is focused, ←→ cycle the cursor row's kind
+    // (`id` ⇄ `file`) and must not fall through to the field match (the parked
+    // `field` would otherwise move the policies cursor).
+    if form.chain_focus {
+        let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+        if let Some(row) = form.chain.get_mut(idx) {
+            cycle_index(&mut row.kind, CHAIN_KIND_OPTIONS.len(), forward);
+        }
+        return;
+    }
     match form.field {
         4 => cycle_index(&mut form.key_type, KEY_TYPE_OPTIONS.len(), forward),
         5 => cycle_index(&mut form.hash_alg, HASH_ALG_OPTIONS.len(), forward),
@@ -1706,6 +1985,15 @@ fn cycle_cert(form: &mut CertForm, forward: bool) {
 }
 
 fn cycle_csr(form: &mut CsrForm, forward: bool) {
+    // While the chain table is focused, ←→ cycle the cursor row's kind
+    // (see `cycle_cert`).
+    if form.chain_focus {
+        let idx = form.chain_cursor.min(form.chain.len().saturating_sub(1));
+        if let Some(row) = form.chain.get_mut(idx) {
+            cycle_index(&mut row.kind, CHAIN_KIND_OPTIONS.len(), forward);
+        }
+        return;
+    }
     match form.field {
         4 => cycle_index(&mut form.key_type, KEY_TYPE_OPTIONS.len(), forward),
         5 => cycle_index(&mut form.hash_alg, HASH_ALG_OPTIONS.len(), forward),
@@ -1745,6 +2033,8 @@ fn toggle_cert(form: &mut CertForm) {
                 *slot = !*slot;
             }
         }
+        // pathlen toggle occupies field index 15.
+        15 => form.pathlen_enabled = !form.pathlen_enabled,
         _ => {}
     }
 }
@@ -1767,6 +2057,8 @@ fn toggle_csr(form: &mut CsrForm) {
                 *slot = !*slot;
             }
         }
+        // pathlen toggle (sign mode) occupies field index 16.
+        16 => form.pathlen_enabled = !form.pathlen_enabled,
         _ => {}
     }
 }
@@ -1790,6 +2082,12 @@ fn toggle_csr(form: &mut CsrForm) {
 /// | 11  | `parent`                       | text        |
 /// | 12  | `signer.cert_pem_file`         | text / path |
 /// | 13  | `signer.private_key_pem_file`  | text / path |
+/// | 14  | `policies`                     | multi-select|
+/// | 15  | `pathlen` (enabled)            | toggle      |
+/// | 16  | `pathlen.length`               | text        |
+///
+/// Chain rows are not fields; their values are routed by the chain-focus arms
+/// of [`App::active_text_field`] / [`App::active_text_field_mut`].
 fn cert_text_field(form: &mut CertForm) -> Option<&mut String> {
     Some(match form.field {
         0 => &mut form.id,
@@ -1803,6 +2101,8 @@ fn cert_text_field(form: &mut CertForm) -> Option<&mut String> {
         11 => &mut form.parent,
         12 => &mut form.signer.cert_pem_file,
         13 => &mut form.signer.private_key_pem_file,
+        // 14 policies (multi-select), 15 pathlen (toggle)
+        16 => &mut form.pathlen_length,
         _ => return None,
     })
 }
@@ -1821,6 +2121,8 @@ fn csr_text_field(form: &mut CsrForm) -> Option<&mut String> {
         // 13/14: sign-mode signer paths, mirroring Cert's 12/13.
         13 => &mut form.signer.cert_pem_file,
         14 => &mut form.signer.private_key_pem_file,
+        // 15 policies (multi-select), 16 pathlen (toggle)
+        17 => &mut form.pathlen_length,
         _ => return None,
     })
 }
@@ -1861,6 +2163,7 @@ fn cert_text_field_ref(form: &CertForm) -> Option<&String> {
         11 => &form.parent,
         12 => &form.signer.cert_pem_file,
         13 => &form.signer.private_key_pem_file,
+        16 => &form.pathlen_length,
         _ => return None,
     })
 }
@@ -1876,6 +2179,7 @@ fn csr_text_field_ref(form: &CsrForm) -> Option<&String> {
         10 => &form.valid_to,
         13 => &form.signer.cert_pem_file,
         14 => &form.signer.private_key_pem_file,
+        17 => &form.pathlen_length,
         _ => return None,
     })
 }
@@ -2127,6 +2431,263 @@ mod tests {
         assert!(!app.csr().policies[0]);
     }
 
+    // --- pathlen group & chain table ---------------------------------------
+
+    /// A Cert app with `pathlen` enabled and `n` default chain rows, parked on
+    /// the pathlen toggle row (field 15) with the table not focused.
+    fn cert_app_with_chain(n: usize) -> App {
+        let mut app = cert_app();
+        let form = app.cert_mut();
+        form.pathlen_enabled = true;
+        form.chain = vec![ChainRow::default(); n];
+        form.field = 15;
+        app
+    }
+
+    #[test]
+    fn cert_pathlen_toggle_at_field_15() {
+        let mut app = cert_app();
+        app.cert_mut().field = 15;
+        assert!(!app.cert().pathlen_enabled);
+        app.update(Message::Toggle);
+        assert!(app.cert().pathlen_enabled);
+        app.update(Message::Toggle);
+        assert!(!app.cert().pathlen_enabled);
+    }
+
+    #[test]
+    fn csr_pathlen_toggle_at_field_16() {
+        let mut app = csr_app();
+        app.csr_mut().field = 16;
+        assert!(!app.csr().pathlen_enabled);
+        app.update(Message::Toggle);
+        assert!(app.csr().pathlen_enabled);
+    }
+
+    #[test]
+    fn typing_at_cert_field_16_fills_pathlen_length() {
+        let mut app = cert_app();
+        app.cert_mut().field = 16;
+        app.update(Message::Char('2'));
+        assert_eq!(app.cert().pathlen_length, "2");
+        app.update(Message::Backspace);
+        assert_eq!(app.cert().pathlen_length, "");
+    }
+
+    #[test]
+    fn typing_at_csr_field_17_fills_pathlen_length() {
+        let mut app = csr_app();
+        app.csr_mut().field = 17;
+        app.update(Message::Char('1'));
+        assert_eq!(app.csr().pathlen_length, "1");
+    }
+
+    #[test]
+    fn add_row_on_pathlen_toggle_appends_chain_row_not_entry() {
+        let mut app = cert_app_with_chain(0);
+        app.update(Message::AddRow);
+        assert_eq!(app.cert().chain.len(), 1, "a chain row is appended");
+        assert_eq!(app.cert().chain_cursor, 0, "cursor moves to the new row");
+        assert!(app.cert().chain_focus, "the table is entered for typing");
+        assert_eq!(app.cert_list.len(), 1, "no cert entry is added");
+    }
+
+    #[test]
+    fn add_row_elsewhere_still_grows_cert_list() {
+        // On any other field, `a` keeps its entry-list meaning even with
+        // pathlen enabled and a chain present.
+        let mut app = cert_app_with_chain(1);
+        app.cert_mut().field = 8; // ca toggle
+        app.update(Message::AddRow);
+        assert_eq!(app.cert_list.len(), 2, "a cert entry is added");
+        assert_eq!(app.cert_list[0].chain.len(), 1, "the chain is untouched");
+        // On the toggle row with pathlen *disabled*, `a` also adds an entry.
+        app.cert_index = 0;
+        app.cert_mut().pathlen_enabled = false;
+        app.cert_mut().field = 15;
+        app.update(Message::AddRow);
+        assert_eq!(app.cert_list.len(), 3);
+    }
+
+    #[test]
+    fn delete_row_on_pathlen_toggle_removes_cursor_row_and_clamps() {
+        let mut app = cert_app_with_chain(3);
+        app.cert_mut().chain[2].value = "last".to_string();
+        app.cert_mut().chain_cursor = 2;
+        app.update(Message::DeleteRow);
+        assert_eq!(app.cert().chain.len(), 2, "the cursor row is removed");
+        assert_eq!(app.cert().chain_cursor, 1, "cursor clamps to the new last");
+        assert_eq!(app.cert_list.len(), 1, "no cert entry is deleted");
+        app.update(Message::DeleteRow);
+        app.update(Message::DeleteRow);
+        assert!(app.cert().chain.is_empty());
+        assert_eq!(app.cert().chain_cursor, 0);
+        assert!(!app.cert().chain_focus, "focus leaves the emptied table");
+        // Further deletes on the toggle row are a no-op (chain empty, single
+        // entry list).
+        app.update(Message::DeleteRow);
+        assert_eq!(app.cert_list.len(), 1);
+    }
+
+    #[test]
+    fn down_from_length_enters_chain_table_only_when_enabled_and_nonempty() {
+        // Enabled + non-empty: Down from the length field enters the table.
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().field = 16;
+        app.update(Message::Down);
+        assert!(app.cert().chain_focus, "the table is entered");
+        assert_eq!(app.cert().chain_cursor, 0);
+        // Further Downs advance the cursor, clamped at the last row.
+        app.update(Message::Down);
+        assert_eq!(app.cert().chain_cursor, 1);
+        app.update(Message::Down);
+        assert_eq!(app.cert().chain_cursor, 1);
+        // Empty chain: Down stays on the length field.
+        let mut app = cert_app_with_chain(0);
+        app.cert_mut().field = 16;
+        app.update(Message::Down);
+        assert!(!app.cert().chain_focus);
+        assert_eq!(app.cert().field, 16);
+        // Disabled: Down stays on the length field even with rows present.
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().pathlen_enabled = false;
+        app.cert_mut().field = 16;
+        app.update(Message::Down);
+        assert!(!app.cert().chain_focus);
+        assert_eq!(app.cert().field, 16);
+    }
+
+    #[test]
+    fn up_from_chain_row_zero_leaves_table_and_keeps_cursor() {
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().chain_focus = true;
+        app.cert_mut().chain_cursor = 1;
+        // Up retreats within the table.
+        app.update(Message::Up);
+        assert_eq!(app.cert().chain_cursor, 0);
+        assert!(app.cert().chain_focus);
+        // Up from row 0 leaves the table, parking the field on the length row
+        // and *retaining* the cursor (it stays the `d` target).
+        app.update(Message::Up);
+        assert!(!app.cert().chain_focus);
+        assert_eq!(app.cert().field, 16);
+        assert_eq!(app.cert().chain_cursor, 0, "cursor is retained");
+        // Continued Up steps the fixed fields.
+        app.update(Message::Up);
+        assert_eq!(app.cert().field, 15);
+    }
+
+    #[test]
+    fn typing_while_chain_focus_edits_cursor_row_value() {
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().pathlen_length = "2".to_string();
+        app.cert_mut().chain_focus = true;
+        app.cert_mut().chain_cursor = 1;
+        app.update(Message::Char('c'));
+        app.update(Message::Char('a'));
+        assert_eq!(app.cert().chain[1].value, "ca");
+        assert_eq!(app.cert().chain[0].value, "", "other rows are untouched");
+        assert_eq!(
+            app.cert().pathlen_length,
+            "2",
+            "the length buffer is untouched"
+        );
+        app.update(Message::Backspace);
+        assert_eq!(app.cert().chain[1].value, "c");
+        // Del clears the row's value (routed like any focused text buffer).
+        app.update(Message::ClearField);
+        assert_eq!(app.cert().chain[1].value, "");
+    }
+
+    #[test]
+    fn left_right_while_chain_focus_cycles_kind_not_policies_cursor() {
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().chain_focus = true;
+        app.cert_mut().chain_cursor = 0;
+        app.update(Message::Right);
+        assert_eq!(app.cert().chain[0].kind, 1, "id -> file");
+        assert_eq!(app.cert().chain[1].kind, 0, "other rows are untouched");
+        app.update(Message::Right);
+        assert_eq!(app.cert().chain[0].kind, 0, "file wraps back to id");
+        app.update(Message::Left);
+        assert_eq!(app.cert().chain[0].kind, 1, "backward wraps to file");
+        assert_eq!(
+            app.cert().policies_cursor,
+            0,
+            "the policies cursor must not move while focus is in the table"
+        );
+    }
+
+    #[test]
+    fn csr_chain_table_mirrors_cert_navigation() {
+        let mut app = csr_app();
+        let form = app.csr_mut();
+        form.pathlen_enabled = true;
+        form.chain = vec![ChainRow::default()];
+        form.field = 17;
+        // Down from the length field (17) enters the table.
+        app.update(Message::Down);
+        assert!(app.csr().chain_focus);
+        // Typing edits the row's value.
+        app.update(Message::Char('x'));
+        assert_eq!(app.csr().chain[0].value, "x");
+        // Up from row 0 leaves the table, parked on the length row.
+        app.update(Message::Up);
+        assert!(!app.csr().chain_focus);
+        assert_eq!(app.csr().field, 17);
+        // `a` on the toggle row (16) appends and re-enters the table.
+        app.csr_mut().field = 16;
+        app.update(Message::AddRow);
+        assert_eq!(app.csr().chain.len(), 2);
+        assert_eq!(app.csr().chain_cursor, 1);
+        assert!(app.csr().chain_focus);
+        assert_eq!(app.csr_list.len(), 1, "no CSR entry is added");
+    }
+
+    #[test]
+    fn focused_path_field_targets_file_chain_rows_only() {
+        let mut app = cert_app_with_chain(2);
+        app.cert_mut().chain_focus = true;
+        app.cert_mut().chain_cursor = 1;
+        // An `id` row (kind 0) has nothing on disk to browse.
+        assert!(app.focused_path_field().is_none());
+        // A `file` row (kind 1) yields a row-carrying target.
+        app.cert_mut().chain[1].kind = 1;
+        assert_eq!(
+            app.focused_path_field(),
+            Some(BrowseTarget {
+                screen: Screen::Cert,
+                field: 16,
+                row: Some(1),
+            })
+        );
+    }
+
+    #[test]
+    fn apply_path_with_row_writes_into_chain_row() {
+        let mut app = cert_app_with_chain(2);
+        app.apply_path(
+            BrowseTarget {
+                screen: Screen::Cert,
+                field: 16,
+                row: Some(1),
+            },
+            "/certs/root.pem".to_string(),
+        );
+        assert_eq!(app.cert().chain[1].value, "/certs/root.pem");
+        assert_eq!(app.cert().chain[0].value, "", "other rows are untouched");
+        // An out-of-range row is ignored, matching unknown-pair behavior.
+        app.apply_path(
+            BrowseTarget {
+                screen: Screen::Cert,
+                field: 16,
+                row: Some(9),
+            },
+            "/nope".to_string(),
+        );
+        assert!(app.cert().chain.iter().all(|r| r.value != "/nope"));
+    }
+
     #[test]
     fn add_and_delete_revoked_rows() {
         let mut app = App::new("./out".to_string());
@@ -2186,6 +2747,7 @@ mod tests {
             Some(BrowseTarget {
                 screen: Screen::Csr,
                 field: 13,
+                row: None,
             })
         );
         app.csr_mut().field = 14;
@@ -2194,6 +2756,7 @@ mod tests {
             Some(BrowseTarget {
                 screen: Screen::Csr,
                 field: 14,
+                row: None,
             })
         );
         // The original csr_pem_file path field is still browseable.
@@ -2208,6 +2771,7 @@ mod tests {
             BrowseTarget {
                 screen: Screen::Csr,
                 field: 13,
+                row: None,
             },
             "/tmp/ca.pem".to_string(),
         );
@@ -2215,6 +2779,7 @@ mod tests {
             BrowseTarget {
                 screen: Screen::Csr,
                 field: 14,
+                row: None,
             },
             "/tmp/ca.key".to_string(),
         );
@@ -2223,18 +2788,19 @@ mod tests {
     }
 
     #[test]
-    fn csr_down_reaches_field_15() {
+    fn csr_down_reaches_field_17() {
         let mut app = csr_app();
         app.csr_mut().field = 0;
-        // 15 Downs from field 0 reach field 15 (0..=15 => 16 fields, the last
-        // being the certificate-policies multi-select).
-        for _ in 0..15 {
+        // 17 Downs from field 0 reach field 17 (0..=17 => 18 fields, the last
+        // being the pathlen length).
+        for _ in 0..17 {
             app.update(Message::Down);
         }
-        assert_eq!(app.csr().field, 15, "active_field_count must allow 0..=15");
-        // Further Down is clamped at the last field.
+        assert_eq!(app.csr().field, 17, "active_field_count must allow 0..=17");
+        // Further Down is clamped at the last field (pathlen disabled, so the
+        // chain table is not entered).
         app.update(Message::Down);
-        assert_eq!(app.csr().field, 15);
+        assert_eq!(app.csr().field, 17);
     }
 
     // --- R3: CRL revoked-row navigation -----------------------------------
@@ -2512,10 +3078,24 @@ mod tests {
         app.cert_mut().id = "first".to_string();
         app.update(Message::AddRow); // index 1
         app.cert_mut().id = "second".to_string();
+        // Populate the pathlen group so the reset covers the new state too.
+        app.cert_mut().pathlen_enabled = true;
+        app.cert_mut().pathlen_length = "2".to_string();
+        app.cert_mut().chain.push(ChainRow {
+            kind: 1,
+            value: "root.pem".to_string(),
+        });
+        app.cert_mut().chain_cursor = 0;
+        app.cert_mut().chain_focus = true;
         app.set_status("hint");
         app.update(Message::ClearForm);
         // Active (second) entry reset, sibling untouched.
         assert_eq!(app.cert_list[1].id, "");
+        assert!(!app.cert_list[1].pathlen_enabled);
+        assert_eq!(app.cert_list[1].pathlen_length, "");
+        assert!(app.cert_list[1].chain.is_empty());
+        assert_eq!(app.cert_list[1].chain_cursor, 0);
+        assert!(!app.cert_list[1].chain_focus);
         assert_eq!(app.cert_list[0].id, "first");
         assert_eq!(app.cert_list.len(), 2);
         assert!(app.status.is_none());
@@ -2581,9 +3161,18 @@ mod tests {
     }
 
     #[test]
-    fn cert_field_count_is_fifteen() {
-        let app = cert_app();
-        assert_eq!(app.active_field_count(), 15);
+    fn cert_field_count_is_seventeen() {
+        let mut app = cert_app();
+        assert_eq!(app.active_field_count(), 17);
+        // Down from field 0 reaches the last field (16) and clamps there
+        // (pathlen disabled, so the chain table is not entered).
+        app.cert_mut().field = 0;
+        for _ in 0..16 {
+            app.update(Message::Down);
+        }
+        assert_eq!(app.cert().field, 16, "active_field_count must allow 0..=16");
+        app.update(Message::Down);
+        assert_eq!(app.cert().field, 16);
     }
 
     // --- path-field tagging ----------------------------------------------
@@ -2596,7 +3185,8 @@ mod tests {
             app.focused_path_field(),
             Some(BrowseTarget {
                 screen: Screen::Cert,
-                field: 12
+                field: 12,
+                row: None,
             })
         );
         app.cert_mut().field = 13;
@@ -2656,7 +3246,11 @@ mod tests {
     /// A `FillField` purpose for the given (screen, field) — the common test
     /// shape replacing the old bare `BrowseTarget`.
     fn fill(screen: Screen, field: usize) -> BrowsePurpose {
-        BrowsePurpose::FillField(BrowseTarget { screen, field })
+        BrowsePurpose::FillField(BrowseTarget {
+            screen,
+            field,
+            row: None,
+        })
     }
 
     #[test]
@@ -2835,6 +3429,7 @@ mod tests {
             BrowseTarget {
                 screen: Screen::Cert,
                 field: 13,
+                row: None,
             },
             "/k/key.pem".to_string(),
         );
@@ -2849,6 +3444,7 @@ mod tests {
             BrowseTarget {
                 screen: Screen::Cms,
                 field: 1,
+                row: None,
             },
             "/d/data.bin".to_string(),
         );

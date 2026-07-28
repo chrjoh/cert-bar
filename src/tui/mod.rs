@@ -1173,6 +1173,7 @@ mod tests {
                 purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
+                    row: None,
                 }),
             });
             let theme = Theme::dark();
@@ -1211,6 +1212,7 @@ mod tests {
                 purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
+                    row: None,
                 }),
             });
             let theme = Theme::dark();
@@ -1760,6 +1762,7 @@ mod tests {
             BrowsePurpose::FillField(BrowseTarget {
                 screen: Screen::Cert,
                 field: 12,
+                row: None,
             })
         }
 
@@ -1902,6 +1905,7 @@ mod tests {
                 purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
+                    row: None,
                 }),
             });
             assert_eq!(
@@ -2051,6 +2055,7 @@ mod tests {
                 purpose: BrowsePurpose::FillField(BrowseTarget {
                     screen: Screen::Cert,
                     field: 12,
+                    row: None,
                 }),
             });
             app.set_error_popup("Generate failed: boom");
