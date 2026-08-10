@@ -30,7 +30,7 @@ in the go version CertificateBar.
 
 ## Dependencies
 
-### Dependency: `cert-helper` v0.4.4
+### Dependency: `cert-helper` v0.5.1
 
 This project uses `cert-helper`, a utility designed to simplify the creation and management of X.509 certificates using OpenSSL. It provides a structured and automated approach to:
 
