@@ -507,10 +507,14 @@ QzIhEb5ZiTDMEkxBccLz/QQRwWVhF1c=
 -----END CERTIFICATE REQUEST-----"
     }
 
+    /// A signing CA valid until 2049, so the `validto: 2037-07-01` the signing
+    /// tests request fits inside it. Since cert-helper 0.5.3 a signed certificate
+    /// may not outlive its signer, and the builder default is only one year.
     fn dummy_certificate(pathlen: u32) -> CHCertificate {
         CertBuilder::new()
             .common_name("My Test Ca")
             .is_ca(true)
+            .valid_to("2049-01-01")
             .pathlen(pathlen)
             .build_and_self_sign()
             .unwrap()
