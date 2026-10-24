@@ -30,7 +30,7 @@ impl From<HashAlg> for CHHashAlg {
 /// a cert built in the same run, or by a path to a PEM cert on disk.
 ///
 /// In YAML each entry is a single-key map — `- id: rootca` or
-/// `- file: ./ca/root_cert.pem`. serde_yaml 0.9 would otherwise render a plain
+/// `- file: ./ca/root_cert.pem`. serde_norway would otherwise render a plain
 /// externally-tagged enum with `!id` / `!file` tags, so we (de)serialize through
 /// [`ChainRefRepr`] to keep the map form.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -43,7 +43,7 @@ pub enum ChainRef {
 }
 
 /// Serde surrogate for [`ChainRef`]: a map where exactly one of `id` / `file` is
-/// present. Keeps the `- id:` / `- file:` YAML form under serde_yaml 0.9.
+/// present. Keeps the `- id:` / `- file:` YAML form under serde_norway.
 #[derive(Debug, Deserialize, Serialize)]
 struct ChainRefRepr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,7 +406,7 @@ pub fn read_certificate_config<C: AsRef<Path>>(
 ) -> Result<Vec<Certificate>, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
 
-    let certs: Certificates = serde_yaml::from_str(&yaml_str)?;
+    let certs: Certificates = serde_norway::from_str(&yaml_str)?;
     let flat_certs: Vec<Certificate> = certs
         .certificates
         .into_iter()
@@ -431,7 +431,7 @@ pub fn read_certificate_config<C: AsRef<Path>>(
 pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
 
-    let csrs: Csrs = serde_yaml::from_str(&yaml_str)?;
+    let csrs: Csrs = serde_norway::from_str(&yaml_str)?;
     let flat_csr: Vec<Csr> = csrs.csrs.into_iter().map(|wrapper| wrapper.csr).collect();
     let flat_requests_to_sign: Vec<SigningRequest> = csrs
         .signing_requests
@@ -459,7 +459,7 @@ pub fn read_csr_config<C: AsRef<Path>>(config: C) -> Result<CsrData, Box<dyn std
 /// Returns an error if the file does not exist or if the YAML content is invalid.
 pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<Crl, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
-    match serde_yaml::from_str(&yaml_str) {
+    match serde_norway::from_str(&yaml_str) {
         Ok(data) => Ok(data),
         Err(e) => Err(e.into()),
     }
@@ -468,7 +468,7 @@ pub fn read_crl_config<C: AsRef<Path>>(config: C) -> Result<Crl, Box<dyn std::er
 pub fn read_cms_config<C: AsRef<Path>>(config: C) -> Result<Vec<Cms>, Box<dyn std::error::Error>> {
     let yaml_str = fs::read_to_string(config)?;
 
-    let cmss: Cmss = serde_yaml::from_str(&yaml_str)?;
+    let cmss: Cmss = serde_norway::from_str(&yaml_str)?;
     let flat_cmss: Vec<Cms> = cmss.cmss.into_iter().map(|wrapper| wrapper.cms).collect();
     Ok(flat_cmss)
 }
@@ -495,7 +495,7 @@ pub fn write_certificate_config<C: AsRef<Path>>(
             .map(|certificate| CertificateWrapper { certificate })
             .collect(),
     };
-    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    let yaml_str = serde_norway::to_string(&wrapped)?;
     fs::write(config, yaml_str)?;
     Ok(())
 }
@@ -528,7 +528,7 @@ pub fn write_csr_config<C: AsRef<Path>>(
             .map(|signing_request| SigningRequestWrapper { signing_request })
             .collect(),
     };
-    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    let yaml_str = serde_norway::to_string(&wrapped)?;
     fs::write(config, yaml_str)?;
     Ok(())
 }
@@ -549,7 +549,7 @@ pub fn write_crl_config<C: AsRef<Path>>(
     crl: Crl,
     config: C,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let yaml_str = serde_yaml::to_string(&crl)?;
+    let yaml_str = serde_norway::to_string(&crl)?;
     fs::write(config, yaml_str)?;
     Ok(())
 }
@@ -573,7 +573,7 @@ pub fn write_cms_config<C: AsRef<Path>>(
     let wrapped = Cmss {
         cmss: cmss.into_iter().map(|cms| CmsWrapper { cms }).collect(),
     };
-    let yaml_str = serde_yaml::to_string(&wrapped)?;
+    let yaml_str = serde_norway::to_string(&wrapped)?;
     fs::write(config, yaml_str)?;
     Ok(())
 }
@@ -986,7 +986,7 @@ cmss:
                 certificate: cert.clone(),
             }],
         };
-        let yaml = serde_yaml::to_string(&wrapped).unwrap();
+        let yaml = serde_norway::to_string(&wrapped).unwrap();
         assert!(
             !yaml.contains("hashalg"),
             "hashalg must be omitted when None, got:\n{yaml}"
@@ -1000,7 +1000,7 @@ cmss:
                 certificate: with_hash,
             }],
         };
-        let yaml = serde_yaml::to_string(&wrapped).unwrap();
+        let yaml = serde_norway::to_string(&wrapped).unwrap();
         assert!(yaml.contains("hashalg"), "hashalg must serialize when Some");
     }
 
