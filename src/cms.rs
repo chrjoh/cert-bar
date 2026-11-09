@@ -11,16 +11,16 @@ use cms::content_info::ContentInfo;
 use cms::enveloped_data::RecipientIdentifier;
 use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
 use der::asn1::{ObjectIdentifier, OctetString, SetOfVec};
-use der::{Any, Tag, TagNumber};
+use der::{Any, Tag};
 use ecdsa::SigningKey as EcdsaSigningKey;
 use ecdsa::der::Signature as EcdsaDerSignature;
 use p256::{NistP256, SecretKey as P256SecretKey};
 use p384::{NistP384, SecretKey as P384SecretKey};
-use rand::{RngCore, thread_rng};
+use rand::Rng;
 use rsa::pkcs1::der::DecodePem;
 use rsa::pkcs1v15;
 use rsa::pkcs8::DecodePrivateKey;
-use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPublicKey};
+use rsa::{PrivateKey, PublicKey, pkcs1::DecodeRsaPublicKey};
 use sha2::{Digest, Sha256};
 use spki::AlgorithmIdentifierOwned;
 use std::fs;
@@ -186,7 +186,11 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     };
     const RSA_ENCRYPTION_OID: ObjectIdentifier =
         ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
-    let algorithm_oid = &cert.tbs_certificate.subject_public_key_info.algorithm.oid;
+    let algorithm_oid = &cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .algorithm
+        .oid;
     if *algorithm_oid != RSA_ENCRYPTION_OID {
         return Err(cms::builder::Error::Builder(format!(
             "Can only create CMS using RSA key. Certificate uses OID: {}",
@@ -195,25 +199,22 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     }
     let recipient_id =
         RecipientIdentifier::IssuerAndSerialNumber(cms::cert::IssuerAndSerialNumber {
-            issuer: cert.tbs_certificate.issuer.clone(),
-            serial_number: cert.tbs_certificate.serial_number.clone(),
+            issuer: cert.tbs_certificate().issuer().clone(),
+            serial_number: cert.tbs_certificate().serial_number().clone(),
         });
 
     let public_key_der = &cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .subject_public_key
         .raw_bytes();
 
-    let rsa_public_key = RsaPublicKey::from_pkcs1_der(public_key_der)
+    let rsa_public_key = PublicKey::from_pkcs1_der(public_key_der)
         .map_err(|e| cms::builder::Error::Builder(e.to_string()))?;
 
     let key_encryption_info = KeyEncryptionInfo::Rsa(rsa_public_key);
 
-    let mut rng = thread_rng();
-
-    let recipient_builder =
-        KeyTransRecipientInfoBuilder::new(recipient_id, key_encryption_info, &mut rng)?;
+    let recipient_builder = KeyTransRecipientInfoBuilder::new(recipient_id, key_encryption_info)?;
 
     // Create the EnvelopedDataBuilder and add recipient in one go
     let mut builder = EnvelopedDataBuilder::new(
@@ -227,10 +228,9 @@ fn create_cms(cms: &Cms) -> Result<Vec<u8>, cms::builder::Error> {
     const ENVELOPED_DATA_OID: ObjectIdentifier =
         ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.3");
     // Build the EnvelopedData with a fresh RNG to avoid issues with the cms crate
-    let mut rng2 = thread_rng();
+    let mut rng2 = rand::rng();
     let enveloped = builder.build_with_rng(&mut rng2)?;
     let enveloped_der = enveloped.to_der()?;
-    let explicit_tag = TagNumber::N0.context_specific(true);
     let content = Any::from_der(&enveloped_der)?;
 
     let content_info = ContentInfo {
@@ -254,7 +254,7 @@ enum DetectedKey {
 impl DetectedKey {
     fn from_pem(pem_string: &str) -> Result<Self, cms::builder::Error> {
         // Try RSA first
-        if let Ok(rsa_private_key) = RsaPrivateKey::from_pkcs8_pem(pem_string) {
+        if let Ok(rsa_private_key) = PrivateKey::from_pkcs8_pem(pem_string) {
             let signing_key = pkcs1v15::SigningKey::<Sha256>::new(rsa_private_key);
             return Ok(DetectedKey::Rsa(signing_key));
         }
@@ -286,7 +286,7 @@ impl DetectedKey {
         const RFC8894_ID_SENDER_NONCE: ObjectIdentifier =
             ObjectIdentifier::new_unwrap("2.16.840.1.113733.1.9.5");
         let mut nonce_bytes = [0u8; 32];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         rng.fill_bytes(&mut nonce_bytes);
         let mut sender_nonce_value: SetOfVec<AttributeValue> = Default::default();
         let nonce = OctetString::new(nonce_bytes)
@@ -305,7 +305,6 @@ impl DetectedKey {
         match self {
             DetectedKey::Rsa(signing_key) => {
                 let mut signer_info_builder = SignerInfoBuilder::new(
-                    signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
@@ -333,6 +332,7 @@ impl DetectedKey {
                     .add_certificate(cms::cert::CertificateChoices::Certificate(x509_cert))?
                     .add_signer_info::<pkcs1v15::SigningKey<Sha256>, rsa::pkcs1v15::Signature>(
                         signer_info_builder,
+                        signing_key,
                     )?
                     .build()?;
 
@@ -343,7 +343,6 @@ impl DetectedKey {
 
             DetectedKey::P256(signing_key) => {
                 let mut signer_info_builder = SignerInfoBuilder::new(
-                    signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
@@ -371,6 +370,7 @@ impl DetectedKey {
                     .add_certificate(cms::cert::CertificateChoices::Certificate(x509_cert))?
                     .add_signer_info::<EcdsaSigningKey<NistP256>, EcdsaDerSignature<NistP256>>(
                         signer_info_builder,
+                        signing_key,
                     )?
                     .build()?;
 
@@ -380,7 +380,6 @@ impl DetectedKey {
             }
             DetectedKey::P384(signing_key) => {
                 let mut signer_info_builder = SignerInfoBuilder::new(
-                    signing_key,
                     signer_identifier,
                     digest_algorithm.clone(),
                     encapsulated_content,
@@ -408,6 +407,7 @@ impl DetectedKey {
                     .add_certificate(cms::cert::CertificateChoices::Certificate(x509_cert))?
                     .add_signer_info::<EcdsaSigningKey<NistP384>, EcdsaDerSignature<NistP384>>(
                         signer_info_builder,
+                        signing_key,
                     )?
                     .build()?;
 
@@ -515,8 +515,8 @@ fn create_pkcs7_signed_data(
     }
     let signer_identifier =
         SignerIdentifier::IssuerAndSerialNumber(cms::cert::IssuerAndSerialNumber {
-            issuer: signer_cert.tbs_certificate.issuer.clone(),
-            serial_number: signer_cert.tbs_certificate.serial_number.clone(),
+            issuer: signer_cert.tbs_certificate().issuer().clone(),
+            serial_number: signer_cert.tbs_certificate().serial_number().clone(),
         });
 
     const SHA256_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
@@ -580,7 +580,7 @@ fn verify_signing_certificate(cert: &Certificate) -> Result<(), String> {
 fn verify_certificate_dates(cert: &Certificate) -> Result<(), String> {
     let now = Utc::now();
 
-    let not_before = match &cert.tbs_certificate.validity.not_before {
+    let not_before = match &cert.tbs_certificate().validity().not_before {
         Time::UtcTime(utc_time) => {
             DateTime::from_timestamp(utc_time.to_unix_duration().as_secs() as i64, 0)
                 .ok_or("Invalid not_before time format")?
@@ -591,7 +591,7 @@ fn verify_certificate_dates(cert: &Certificate) -> Result<(), String> {
         }
     };
 
-    let not_after = match &cert.tbs_certificate.validity.not_after {
+    let not_after = match &cert.tbs_certificate().validity().not_after {
         Time::UtcTime(utc_time) => {
             DateTime::from_timestamp(utc_time.to_unix_duration().as_secs() as i64, 0)
                 .ok_or("Invalid not_after time format")?
@@ -622,7 +622,7 @@ fn verify_certificate_dates(cert: &Certificate) -> Result<(), String> {
 }
 
 fn verify_key_usage_for_signing(cert: &Certificate) -> Result<(), String> {
-    let Some(extensions) = &cert.tbs_certificate.extensions else {
+    let Some(extensions) = cert.tbs_certificate().extensions() else {
         return Err("Certificate must have extensions for security compliance".to_string());
     };
 
@@ -658,7 +658,7 @@ fn verify_key_usage_for_signing(cert: &Certificate) -> Result<(), String> {
 }
 
 fn verify_key_usage_for_encryption(cert: &Certificate) -> Result<(), String> {
-    let Some(extensions) = &cert.tbs_certificate.extensions else {
+    let Some(extensions) = cert.tbs_certificate().extensions() else {
         return Err("Certificate must have extensions for security compliance".to_string());
     };
 
@@ -1125,8 +1125,8 @@ mod tests {
                         let verifier_rsa_key_pem =
                             String::from_utf8(verifier_rsa_key_pem_bytes).unwrap();
                         let verifier_rsa_key =
-                            RsaPrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
-                        rsa::pkcs1v15::VerifyingKey::<Sha256>::new(RsaPublicKey::from(
+                            PrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
+                        rsa::pkcs1v15::VerifyingKey::<Sha256>::new(PublicKey::from(
                             verifier_rsa_key,
                         ))
                     };
@@ -1655,9 +1655,8 @@ mod tests {
                 .unwrap();
             let verifier = {
                 let verifier_rsa_key_pem = String::from_utf8(verifier_rsa_key_pem_bytes).unwrap();
-                let verifier_rsa_key =
-                    RsaPrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
-                rsa::pkcs1v15::VerifyingKey::<Sha256>::new(RsaPublicKey::from(verifier_rsa_key))
+                let verifier_rsa_key = PrivateKey::from_pkcs8_pem(&verifier_rsa_key_pem).unwrap();
+                rsa::pkcs1v15::VerifyingKey::<Sha256>::new(PublicKey::from(verifier_rsa_key))
             };
             assert!(
                 verifier
